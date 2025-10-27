@@ -24,7 +24,7 @@ services:
       # Allows the container to reach your local machine using "host.docker.internal" instead of "localhost"
       - "host.docker.internal:host-gateway"
     ports:
-      - 8001:8001
+      - 8000:8000
       - 5678:5678 # Debugger port
     deploy:
       resources:
@@ -35,7 +35,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "PORT=8001; (wget -qO- http://127.0.0.1:8001/health || curl -fsS http://127.0.0.1:8001/health) >/dev/null || exit 1"
+          "PORT=8000; (wget -qO- http://127.0.0.1:8000/health || curl -fsS http://127.0.0.1:8000/health) >/dev/null || exit 1"
         ]
       interval: 15s
       timeout: 5s
@@ -76,7 +76,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8001:8001" # MCP port
+      - "8000:8000" # MCP port
       - "5678:5678" # MCP debugger port
     deploy:
       resources:
