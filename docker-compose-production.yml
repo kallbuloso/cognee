@@ -35,7 +35,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "PORT=8000; (wget -qO- http://127.0.0.1:8000/health || curl -fsS http://127.0.0.1:8000/health) >/dev/null || exit 1"
+          "PORT=8001; (wget -qO- http://127.0.0.1:8001/health || curl -fsS http://127.0.0.1:8001/health) >/dev/null || exit 1"
         ]
       interval: 15s
       timeout: 5s
