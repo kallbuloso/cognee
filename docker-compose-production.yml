@@ -15,11 +15,11 @@ services:
       - HOST=0.0.0.0
       - ENVIRONMENT=production
       - LOG_LEVEL=ERROR
-    depends_on:
-      postgres:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy
+    #   neo4j:
+    #     condition: service_healthy
     extra_hosts:
       # Allows the container to reach your local machine using "host.docker.internal" instead of "localhost"
       - "host.docker.internal:host-gateway"
