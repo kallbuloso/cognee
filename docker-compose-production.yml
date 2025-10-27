@@ -24,7 +24,7 @@ services:
       # Allows the container to reach your local machine using "host.docker.internal" instead of "localhost"
       - "host.docker.internal:host-gateway"
     ports:
-      - 8000:8000
+      - 8001:8001
       - 5678:5678 # Debugger port
     deploy:
       resources:
@@ -76,7 +76,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8000:8000" # MCP port
+      - "8001:8001" # MCP port
       - "5678:5678" # MCP debugger port
     deploy:
       resources:
@@ -181,8 +181,8 @@ services:
     image: redislabs/redisinsight:latest
     # container_name: redisinsight
     restart: always
-    ports:
-      - "5540:5540"
+    # ports:
+    #   - "5540:5540"
     networks:
       - cognee_network
 
