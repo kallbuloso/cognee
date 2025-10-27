@@ -8,7 +8,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 
 # Install any needed packages specified in package.json
-RUN npm ci && RUN npm rebuild lightningcss
+RUN npm ci
+RUN npm rebuild lightningcss
 
 # Copy the rest of the application code to the working directory
 COPY src ./src
@@ -16,11 +17,6 @@ COPY public ./public
 COPY next.config.mjs .
 COPY postcss.config.mjs .
 COPY tsconfig.json .
-
-ARG NEXT_PUBLIC_BACKEND_API_URL
-ENV NEXT_PUBLIC_BACKEND_API_URL=$NEXT_PUBLIC_BACKEND_API_URL
-
-EXPOSE 3000
 
 # Build the app and run it
 CMD ["npm", "run", "dev"]
