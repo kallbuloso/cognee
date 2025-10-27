@@ -104,8 +104,8 @@ services:
   # --- MCP Server (cognee-mcp) - build from source ---
   cognee-mcp:
     build:
-      context: ./cognee-mcp
-      dockerfile: ./Dockerfile      # ajuste se necessário
+      context: .
+      dockerfile: ./cognee-mcp/Dockerfile   # ajuste se necessário
     depends_on:
       api:
         condition: service_started
@@ -136,8 +136,8 @@ services:
   # --- Frontend (Next.js/React) - build from source ---
   frontend:
     build:
-      context: ./cognee-frontend
-      dockerfile: ./Dockerfile      # ajuste se necessário
+      context: .
+      dockerfile: ./cognee-frontend/Dockerfile      # ajuste se necessário
     depends_on:
       api:
         condition: service_started
