@@ -1,6 +1,6 @@
 services:
   cognee:
-    container_name: cognee
+    # container_name: cognee
     networks:
       - cognee_network
     build:
@@ -49,7 +49,7 @@ services:
 
   # Cognee MCP Server - Model Context Protocol server for IDE integration
   cognee-mcp:
-    container_name: cognee-mcp
+    # container_name: cognee-mcp
     profiles:
       - mcp
     networks:
@@ -87,7 +87,7 @@ services:
   # NOTE: Frontend is a work in progress and supports minimum amount of features required to be functional.
   # If you want to use Cognee with a UI environment you can integrate the Cognee MCP Server into Cursor / Claude Desktop / Visual Studio Code (through Cline/Roo)
   frontend:
-    container_name: frontend
+    # container_name: frontend
     profiles:
         - ui
     build:
@@ -104,7 +104,7 @@ services:
 
   neo4j:
     image: neo4j:latest
-    container_name: neo4j
+    # container_name: neo4j
     profiles:
       - neo4j
     ports:
@@ -141,7 +141,7 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg17
-    container_name: postgres
+    # container_name: postgres
     profiles:
       - postgres
     environment:
@@ -165,7 +165,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: redis
+    # container_name: redis
     profiles:
       - redis
     ports:
@@ -179,7 +179,7 @@ services:
 
   redisinsight:
     image: redislabs/redisinsight:latest
-    container_name: redisinsight
+    # container_name: redisinsight
     restart: always
     ports:
       - "5540:5540"
