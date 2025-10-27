@@ -1,35 +1,26 @@
-# --- build stage ---
-FROM node:22-alpine AS builder
+# Use an official Node.js runtime as a parent image
+FROM node:22-alpine
+
+# Set the working directory to /app
 WORKDIR /app
 
-# Dependências de sistema necessárias para Next/SWC/sharp em Alpine
-RUN apk add --no-cache libc6-compat
+# Copy package.json and package-lock.json to the working directory
+COPY package.json package-lock.json ./
 
-# Se sua build cair pro "build from source" do sharp/SWC, descomente a linha abaixo:
-# RUN apk add --no-cache python3 make g++ pkgconfig
+# Install any needed packages specified in package.json
+RUN npm ci && RUN npm rebuild lightningcss
 
-COPY package*.json ./
-RUN npm ci --no-audit --no-fund && npm rebuild lightningcss || true
+# Copy the rest of the application code to the working directory
+COPY src ./src
+COPY public ./public
+COPY next.config.mjs .
+COPY postcss.config.mjs .
+COPY tsconfig.json .
 
-COPY . .
-
-# injeta a URL da API no build (Next lê em build-time)
 ARG NEXT_PUBLIC_BACKEND_API_URL
 ENV NEXT_PUBLIC_BACKEND_API_URL=$NEXT_PUBLIC_BACKEND_API_URL
-ENV NEXT_TELEMETRY_DISABLED=1
-
-RUN npm run build
-
-# --- runtime stage ---
-FROM node:22-alpine AS runner
-ENV NODE_ENV=production
-WORKDIR /app
-
-# O Next só precisa dos artefatos e estáticos
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/package*.json ./
-RUN npm ci --omit=dev --no-audit --no-fund
 
 EXPOSE 3000
-CMD ["npm", "run", "start"]
+
+# Build the app and run it
+CMD ["npm", "run", "dev"]
