@@ -25,7 +25,7 @@ x-common-env: &common_env
 services:
   # --- Banco vetorial + relacional (pg + pgvector) ---
   postgres:
-    image: ankane/pgvector:pg16
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: ${DB_USERNAME}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -52,7 +52,7 @@ services:
 
   # --- Neo4j (grafo) ---
   neo4j:
-    image: neo4j:5-community
+    image: neo4j:latest
     environment:
       NEO4J_AUTH: "${NEO4J_USERNAME}/${NEO4J_PASSWORD}"
       NEO4J_dbms_default__database: ${NEO4J_DB:-neo4j}
