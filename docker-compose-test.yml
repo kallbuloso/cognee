@@ -1,0 +1,158 @@
+version: "3.9"
+
+x-common-env: &common_env
+  ENV: ${ENV:-production}
+  # Postgres / pgvector
+  DB_PROVIDER: ${DB_PROVIDER:-postgres}
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_USERNAME: ${DB_USERNAME}
+  DB_PASSWORD: ${DB_PASSWORD}
+  DB_NAME: ${DB_NAME}
+  VECTOR_DB_PROVIDER: ${VECTOR_DB_PROVIDER:-pgvector}
+  # Redis
+  REDIS_URL: ${REDIS_URL}
+  # Graph (Neo4j)
+  GRAPH_DB_PROVIDER: ${GRAPH_DB_PROVIDER:-neo4j}
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USERNAME: ${NEO4J_USERNAME}
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+  NEO4J_DB: ${NEO4J_DB:-neo4j}
+  # API
+  COGNEE_API_PORT: ${COGNEE_API_PORT:-8000}
+  COGNEE_API_KEY: ${COGNEE_API_KEY}
+
+services:
+  # --- Banco vetorial + relacional (pg + pgvector) ---
+  postgres:
+    image: ankane/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # --- Redis para filas/cache ---
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # --- Neo4j (grafo) ---
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: "${NEO4J_USERNAME}/${NEO4J_PASSWORD}"
+      NEO4J_dbms_default__database: ${NEO4J_DB:-neo4j}
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_security_procedures_allowlist: apoc.*
+      NEO4J_PLUGINS: '["apoc"]'  # comum para utilidades de import/etl
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  # --- API principal (cognee) - build from source ---
+  api:
+    build:
+      context: .
+      dockerfile: ./Dockerfile      # ajuste se o Dockerfile da API estiver noutro lugar
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+    environment:
+      <<: *common_env
+      PYTHONUNBUFFERED: "1"
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    command: >
+      sh -c "
+        ./entrypoint.sh || true &&
+        uvicorn cognee.api.main:app --host 0.0.0.0 --port ${COGNEE_API_PORT:-8000}
+      "
+    ports:
+      - "8000:8000"
+    volumes:
+      - api_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:${COGNEE_API_PORT:-8000}/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  # --- MCP Server (cognee-mcp) - build from source ---
+  cognee-mcp:
+    build:
+      context: ./cognee-mcp
+      dockerfile: ./Dockerfile      # ajuste se necessário
+    depends_on:
+      api:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *common_env
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # Porta típica de MCP via WebSocket/stdio; se o projeto usar 8001/8899, ajuste
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8899"
+      # Se o MCP falar com a API, informe a URL:
+      COGNEE_API_BASE_URL: "http://api:8000"
+      COGNEE_API_KEY: ${COGNEE_API_KEY}
+    ports:
+      - "8899:8899"
+    command: >
+      sh -c "
+        python -m pip install -U pip &&
+        python -m cognee_mcp.server --host 0.0.0.0 --port 8899
+      "
+    restart: unless-stopped
+
+  # --- Frontend (Next.js/React) - build from source ---
+  frontend:
+    build:
+      context: ./cognee-frontend
+      dockerfile: ./Dockerfile      # ajuste se necessário
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
+      NODE_ENV: production
+    # Produção: build + start (Next)
+    command: >
+      sh -c "npm ci && npm run build && npm run start -p 3000"
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  api_data:
