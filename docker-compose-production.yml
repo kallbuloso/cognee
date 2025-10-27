@@ -78,11 +78,6 @@ services:
     ports:
       - "8000:8000" # MCP port
       - "5678:5678" # MCP debugger port
-    depends_on:
-      postgres:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
     deploy:
       resources:
         limits:
