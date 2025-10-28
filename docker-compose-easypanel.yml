@@ -74,6 +74,8 @@ services:
   # --- Redis para filas/cache ---
   redis:
     image: redis:7-alpine
+    volumes:
+      - redis_data:/data
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -203,22 +205,22 @@ services:
     restart: unless-stopped
 
   # --- Frontend (Next.js/React) - build from source ---
-  frontend:
-    build:
-      context: .
-      dockerfile: cognee-frontend/Dockerfile # ajuste se necessário
-    depends_on:
-      api:
-        condition: service_started
-    environment:
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
-      NODE_ENV: production
-    # Produção: build + start (Next)
-    command: >
-      sh -c "npm ci && npm run build && npm run start -p 3000"
-    ports:
-      - "3000:3000"
-    restart: unless-stopped
+  # frontend:
+  #   build:
+  #     context: .
+  #     dockerfile: cognee-frontend/Dockerfile # ajuste se necessário
+  #   depends_on:
+  #     api:
+  #       condition: service_started
+  #   environment:
+  #     NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
+  #     NODE_ENV: production
+  #   # Produção: build + start (Next)
+  #   command: >
+  #     sh -c "npm ci && npm run build && npm run start -p 3000"
+  #   ports:
+  #     - "3000:3000"
+  #   restart: unless-stopped
 
 volumes:
   postgres_data:
@@ -227,4 +229,5 @@ volumes:
   neo4j_import: {}
   neo4j_plugins: {}
   redis_data: {}
-  api_data:
+  api_data: {}
+  redis_data: {}
