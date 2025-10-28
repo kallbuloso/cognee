@@ -188,12 +188,12 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       # Porta típica de MCP via WebSocket/stdio; se o projeto usar 8001/8899, ajuste
       # MCP_HOST: "0.0.0.0"
-      MCP_PORT: "8000"
+      MCP_PORT: "8001"
       # Se o MCP falar com a API, informe a URL:
       # COGNEE_API_BASE_URL: "http://api:8000"
       # COGNEE_API_KEY: ${COGNEE_API_KEY}
     ports:
-      - "8000:8000"
+      - "8000:8001"
     command: >
       sh -c "
         python -m pip install -U pip &&
