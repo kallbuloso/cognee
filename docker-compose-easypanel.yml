@@ -51,27 +51,48 @@ services:
   # --- Neo4j (grafo) ---
   neo4j:
     image: neo4j:latest
+    profiles:
+      - neo4j
+    ports:
+      - 7474:7474
+      - 7687:7687
     environment:
-      NEO4J_AUTH: "${NEO4J_USERNAME}/${NEO4J_PASSWORD}"
-      NEO4J_dbms_default__database: ${NEO4J_DB:-neo4j}
-      NEO4J_dbms_security_procedures_unrestricted: apoc.*
-      NEO4J_dbms_security_procedures_allowlist: apoc.*
-      NEO4J_PLUGINS: '["apoc"]'  # comum para utilidades de import/etl
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}
+      - NEO4J_dbms_default__database=${NEO4J_DB:-neo4j}
+      - NEO4J_PLUGINS=["apoc","graph-data-science"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*,gds.*
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
+      - neo4j_import:/var/lib/neo4j/import
+      - neo4j_plugins:/plugins
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+        reservations:
+          memory: 1g
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
-      interval: 15s
-      timeout: 5s
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -a bolt://localhost:7687 -u neo4j -p ${NEO4J_PASSWORD} 'RETURN 1' | grep -q '1'",
+        ]
+      interval: 20s
+      timeout: 10s
       retries: 30
+      start_period: 90s
     restart: unless-stopped
 
   # --- API principal (cognee) - build from source ---
   api:
     build:
       context: .
-      dockerfile: ./Dockerfile      # ajuste se o Dockerfile da API estiver noutro lugar
+      dockerfile: Dockerfile # ajuste se o Dockerfile da API estiver noutro lugar
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,7 +114,11 @@ services:
     volumes:
       - api_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:${COGNEE_API_PORT:-8000}/api/health || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:${COGNEE_API_PORT:-8000}/api/health || exit 1",
+        ]
       interval: 15s
       timeout: 5s
       retries: 30
@@ -103,7 +128,7 @@ services:
   cognee-mcp:
     build:
       context: .
-      dockerfile: ./cognee-mcp/Dockerfile   # ajuste se necessário
+      dockerfile: ./cognee-mcp/Dockerfile # ajuste se necessário
     depends_on:
       api:
         condition: service_started
@@ -135,7 +160,7 @@ services:
   frontend:
     build:
       context: .
-      dockerfile: ./cognee-frontend/Dockerfile      # ajuste se necessário
+      dockerfile: ./cognee-frontend/Dockerfile # ajuste se necessário
     depends_on:
       api:
         condition: service_started
@@ -151,6 +176,9 @@ services:
 
 volumes:
   postgres_data:
-  neo4j_data:
-  neo4j_logs:
+  neo4j_data: {}
+  neo4j_logs: {}
+  neo4j_import: {}
+  neo4j_plugins: {}
+  redis_data: {}
   api_data:
