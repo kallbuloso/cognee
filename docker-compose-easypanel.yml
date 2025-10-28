@@ -128,8 +128,8 @@ services:
       context: .
       dockerfile: Dockerfile # ajuste se o Dockerfile da API estiver noutro lugar
     depends_on:
-      neo4j:
-        condition: service_started
+      # neo4j:
+      #   condition: service_started
       postgres:
         condition: service_healthy
       redis:
