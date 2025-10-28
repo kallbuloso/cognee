@@ -87,8 +87,6 @@ services:
   # --- Neo4j (grafo) ---
   neo4j:
     image: neo4j:latest
-    profiles:
-      - neo4j
     ports:
       - 7474:7474
       - 7687:7687
