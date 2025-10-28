@@ -193,7 +193,7 @@ services:
       # COGNEE_API_BASE_URL: "http://api:8000"
       # COGNEE_API_KEY: ${COGNEE_API_KEY}
     ports:
-      - "8000:8001"
+      - "8001:8001"
     command: >
       sh -c "
         python -m pip install -U pip &&
