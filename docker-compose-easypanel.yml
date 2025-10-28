@@ -196,9 +196,9 @@ services:
       - "8001:8001"
     command: >
       sh -c "
+        python -m pip install -U pip &&
         python -m pip install protego &&
         python -m pip install playwright &&
-        python -m pip install -U pip &&
         python -m cognee_mcp.server --host 0.0.0.0 --port 8001
       "
     restart: unless-stopped
