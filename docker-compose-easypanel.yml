@@ -122,6 +122,13 @@ services:
       start_period: 90s
     restart: unless-stopped
 
+  redisinsight:
+    image: redislabs/redisinsight:latest
+    container_name: redisinsight
+    restart: always
+    ports:
+      - "5540:5540"
+
   # --- API principal (cognee) - build from source ---
   api:
     build:
@@ -163,36 +170,36 @@ services:
     restart: unless-stopped
 
   # --- MCP Server (cognee-mcp) - build from source ---
-  cognee-mcp:
-    build:
-      context: .
-      dockerfile: cognee-mcp/Dockerfile # ajuste se necessário
-    depends_on:
-      api:
-        condition: service_started
-      redis:
-        condition: service_healthy
-      # neo4j:
-      #   condition: service_started
-      postgres:
-        condition: service_healthy
-    environment:
-      <<: *common_env
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      # Porta típica de MCP via WebSocket/stdio; se o projeto usar 8001/8899, ajuste
-      # MCP_HOST: "0.0.0.0"
-      MCP_PORT: "8001"
-      # Se o MCP falar com a API, informe a URL:
-      # COGNEE_API_BASE_URL: "http://api:8000"
-      # COGNEE_API_KEY: ${COGNEE_API_KEY}
-    ports:
-      - "8001:8001"
-    command: >
-      sh -c "
-        python -m pip install -U pip &&
-        python -m cognee_mcp.server --host 0.0.0.0 --port 8001
-      "
-    restart: unless-stopped
+  # cognee-mcp:
+  #   build:
+  #     context: .
+  #     dockerfile: cognee-mcp/Dockerfile # ajuste se necessário
+  #   depends_on:
+  #     api:
+  #       condition: service_started
+  #     redis:
+  #       condition: service_healthy
+  #     # neo4j:
+  #     #   condition: service_started
+  #     postgres:
+  #       condition: service_healthy
+  #   environment:
+  #     <<: *common_env
+  #     OPENAI_API_KEY: ${OPENAI_API_KEY}
+  #     # Porta típica de MCP via WebSocket/stdio; se o projeto usar 8001/8899, ajuste
+  #     # MCP_HOST: "0.0.0.0"
+  #     MCP_PORT: "8001"
+  #     # Se o MCP falar com a API, informe a URL:
+  #     # COGNEE_API_BASE_URL: "http://api:8000"
+  #     # COGNEE_API_KEY: ${COGNEE_API_KEY}
+  #   ports:
+  #     - "8001:8001"
+  #   command: >
+  #     sh -c "
+  #       python -m pip install -U pip &&
+  #       python -m cognee_mcp.server --host 0.0.0.0 --port 8001
+  #     "
+  #   restart: unless-stopped
 
   # --- Frontend (Next.js/React) - build from source ---
   # frontend:
