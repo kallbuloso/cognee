@@ -60,9 +60,9 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     environment:
-      POSTGRES_USER: cognee
+      POSTGRES_USER: ${DB_USERNAME}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: cognee_db
+      POSTGRES_DB: ${DB_NAME}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -129,12 +129,12 @@ services:
       context: .
       dockerfile: Dockerfile # ajuste se o Dockerfile da API estiver noutro lugar
     depends_on:
+      neo4j:
+        condition: service_started
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      neo4j:
-        condition: service_started
     environment:
       <<: *common_env
       DEBUG: false # Change to true if debugging
