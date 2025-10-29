@@ -157,7 +157,7 @@ services:
     # ports:
     #   - "8000:8000"
     volumes:
-      - api_data:/app/cognee
+      - api_data:${SYSTEM_ROOT_DIRECTORY:-/app/.cognee_system}
     healthcheck:
       test:
         [
