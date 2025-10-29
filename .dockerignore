@@ -5,8 +5,6 @@ evals
 tests
 tools
 assets
-notebooks
-cognee-frontend
 
 .dlt
 .venv
