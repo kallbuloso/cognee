@@ -203,22 +203,22 @@ services:
     restart: unless-stopped
 
   # --- Frontend (Next.js/React) - build from source ---
-  frontend:
-    build:
-      context: ./cognee-frontend
-      dockerfile: Dockerfile # ajuste se necessário
-    depends_on:
-      api:
-        condition: service_started
-    environment:
-      NEXT_PUBLIC_BACKEND_API_URL: ${NEXT_PUBLIC_BACKEND_API_URL:-http://api:8000/api}
-      NODE_ENV: production
-    # Produção: build + start (Next)
-    # command: >
-    #   sh -c "--port 3000 --host 0.0.0.0"
-    # ports:
-    #   - "3000:3000"
-    restart: unless-stopped
+  # frontend:
+  #   build:
+  #     context: ./cognee-frontend
+  #     dockerfile: Dockerfile # ajuste se necessário
+  #   depends_on:
+  #     api:
+  #       condition: service_started
+  #   environment:
+  #     NEXT_PUBLIC_BACKEND_API_URL: ${NEXT_PUBLIC_BACKEND_API_URL:-http://api:8000/api}
+  #     NODE_ENV: production
+  #   # Produção: build + start (Next)
+  #   # command: >
+  #   #   sh -c "--port 3000 --host 0.0.0.0"
+  #   # ports:
+  #   #   - "3000:3000"
+  #   restart: unless-stopped
 
 volumes:
   postgres_data:
