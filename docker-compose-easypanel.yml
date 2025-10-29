@@ -214,8 +214,8 @@ services:
       NEXT_PUBLIC_BACKEND_API_URL: ${NEXT_PUBLIC_BACKEND_API_URL:-http://api:8000/api}
       NODE_ENV: production
     # Produção: build + start (Next)
-    command: >
-      sh -c "--port 3000 --host 0.0.0.0"
+    # command: >
+    #   sh -c "--port 3000 --host 0.0.0.0"
     # ports:
     #   - "3000:3000"
     restart: unless-stopped
