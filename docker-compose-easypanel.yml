@@ -215,7 +215,7 @@ services:
       NODE_ENV: production
     # Produção: build + start (Next)
     command: >
-      sh -c "-p 3000 -H 0.0.0.0"
+      sh -c "--port 3000 --host 0.0.0.0"
     # ports:
     #   - "3000:3000"
     restart: unless-stopped
