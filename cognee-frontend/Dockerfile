@@ -19,4 +19,4 @@ COPY postcss.config.mjs .
 COPY tsconfig.json .
 
 # Build the app and run it
-CMD ["npm", "run", "build"]
+# CMD ["npm", "run", "build"]
