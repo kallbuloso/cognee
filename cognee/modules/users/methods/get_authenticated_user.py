@@ -11,8 +11,8 @@ logger = get_logger("get_authenticated_user")
 
 # Check environment variable to determine authentication requirement
 REQUIRE_AUTHENTICATION = (
-    os.getenv("REQUIRE_AUTHENTICATION", "false").lower() == "true"
-    or os.getenv("ENABLE_BACKEND_ACCESS_CONTROL", "false").lower() == "true"
+    os.getenv("REQUIRE_AUTHENTICATION", "true").lower() == "true"
+    or os.environ.get("ENABLE_BACKEND_ACCESS_CONTROL", "true").lower() == "true"
 )
 
 fastapi_users = get_fastapi_users()

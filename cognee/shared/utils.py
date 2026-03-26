@@ -1,21 +1,27 @@
 """This module contains utility functions for the cognee."""
 
-import os
-import ssl
-import requests
-from datetime import datetime, timezone
+import asyncio
 import http.server
-import socketserver
-from threading import Thread
+import os
 import pathlib
-from uuid import uuid4
+import socketserver
+import ssl
+from datetime import datetime, timezone
+from threading import Thread
+from typing import Any, Union
+from uuid import NAMESPACE_OID, UUID, uuid4, uuid5
 
-from cognee.base_config import get_base_config
-from cognee.infrastructure.databases.graph import get_graph_engine
+import aiohttp
 
+from cognee.shared.logging_utils import get_logger
+
+logger = get_logger()
 
 # Analytics Proxy Url, currently hosted by Vercel
 proxy_url = "https://test.prometh.ai"
+
+# Timeout for telemetry HTTP request; short to avoid blocking if proxy is unreachable
+TELEMETRY_REQUEST_TIMEOUT: int = int(os.getenv("TELEMETRY_REQUEST_TIMEOUT", "5"))
 
 
 def create_secure_ssl_context() -> ssl.SSLContext:
@@ -38,27 +44,68 @@ def get_anonymous_id():
 
     home_dir = str(pathlib.Path(pathlib.Path(__file__).parent.parent.parent.resolve()))
 
-    if not os.path.isdir(home_dir):
-        os.makedirs(home_dir, exist_ok=True)
-    anonymous_id_file = os.path.join(home_dir, ".anon_id")
-    if not os.path.isfile(anonymous_id_file):
-        anonymous_id = str(uuid4())
-        with open(anonymous_id_file, "w", encoding="utf-8") as f:
-            f.write(anonymous_id)
-    else:
-        with open(anonymous_id_file, "r", encoding="utf-8") as f:
-            anonymous_id = f.read()
+    try:
+        if not os.path.isdir(home_dir):
+            os.makedirs(home_dir, exist_ok=True)
+        anonymous_id_file = os.path.join(home_dir, ".anon_id")
+        if not os.path.isfile(anonymous_id_file):
+            anonymous_id = str(uuid4())
+            with open(anonymous_id_file, "w", encoding="utf-8") as f:
+                f.write(anonymous_id)
+        else:
+            with open(anonymous_id_file, "r", encoding="utf-8") as f:
+                anonymous_id = f.read()
+    except Exception as e:
+        # In case of read-only filesystem or other issues
+        logger.warning("Could not create or read anonymous id file: %s", e)
+        return "unknown-anonymous-id"
     return anonymous_id
 
 
-def send_telemetry(event_name: str, user_id, additional_properties: dict = {}):
+def _sanitize_nested_properties(obj: Any, property_names: list[str]) -> Any:
+    """
+    Recursively replaces any property whose key matches one of `property_names`
+    (e.g., ['url', 'path']) in a nested dict or list with a uuid5 hash
+    of its string value. Returns a new sanitized copy.
+    """
+    if isinstance(obj, dict):
+        new_obj = {}
+        for k, v in obj.items():
+            if k in property_names and isinstance(v, str):
+                new_obj[k] = str(uuid5(NAMESPACE_OID, v))
+            else:
+                new_obj[k] = _sanitize_nested_properties(v, property_names)
+        return new_obj
+    elif isinstance(obj, list):
+        return [_sanitize_nested_properties(item, property_names) for item in obj]
+    else:
+        return obj
+
+
+async def _send_telemetry_request(payload: dict) -> None:
+    """Send telemetry payload via async HTTP. Non-blocking, no threads."""
+    timeout = aiohttp.ClientTimeout(total=TELEMETRY_REQUEST_TIMEOUT)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(proxy_url, json=payload) as response:
+                if response.status != 200:
+                    logger.debug("Telemetry proxy returned status %s", response.status)
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        logger.debug("Telemetry request failed: %s", e)
+
+
+def send_telemetry(event_name: str, user_id: Union[str, UUID], additional_properties: dict = None):
+    if additional_properties is None:
+        additional_properties = {}
     if os.getenv("TELEMETRY_DISABLED"):
         return
 
     env = os.getenv("ENV")
     if env in ["test", "dev"]:
         return
-
+    additional_properties = _sanitize_nested_properties(
+        obj=additional_properties, property_names=["url"]
+    )
     current_time = datetime.now(timezone.utc)
     payload = {
         "anonymous_id": str(get_anonymous_id()),
@@ -73,13 +120,11 @@ def send_telemetry(event_name: str, user_id, additional_properties: dict = {}):
         },
     }
 
-    response = requests.post(proxy_url, json=payload)
-
-    if response.status_code != 200:
-        print(f"Error sending telemetry through proxy: {response.status_code}")
+    loop = asyncio.get_running_loop()
+    loop.create_task(_send_telemetry_request(payload))
 
 
-def embed_logo(p, layout_scale, logo_alpha, position):
+def embed_logo(p: Any, layout_scale: float, logo_alpha: float, position: str):
     """
     Embed a logo into the graph visualization as a watermark.
     """
@@ -109,7 +154,11 @@ def embed_logo(p, layout_scale, logo_alpha, position):
 
 
 def start_visualization_server(
-    host="0.0.0.0", port=8001, handler_class=http.server.SimpleHTTPRequestHandler
+    host: str = "0.0.0.0",
+    port: int = 8001,
+    handler_class: type[
+        http.server.SimpleHTTPRequestHandler
+    ] = http.server.SimpleHTTPRequestHandler,
 ):
     """
     Spin up a simple HTTP server in a background thread to serve files.

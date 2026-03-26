@@ -8,6 +8,7 @@ def test_cache_config_defaults():
     """Test that CacheConfig has the correct default values."""
     config = CacheConfig()
 
+    assert config.cache_backend == "fs"
     assert config.caching is False
     assert config.shared_kuzu_lock is False
     assert config.cache_host == "localhost"
@@ -19,6 +20,7 @@ def test_cache_config_defaults():
 def test_cache_config_custom_values():
     """Test that CacheConfig accepts custom values."""
     config = CacheConfig(
+        cache_backend="redis",
         caching=True,
         shared_kuzu_lock=True,
         cache_host="redis.example.com",
@@ -27,6 +29,7 @@ def test_cache_config_custom_values():
         agentic_lock_timeout=180,
     )
 
+    assert config.cache_backend == "redis"
     assert config.caching is True
     assert config.shared_kuzu_lock is True
     assert config.cache_host == "redis.example.com"
@@ -38,6 +41,7 @@ def test_cache_config_custom_values():
 def test_cache_config_to_dict():
     """Test the to_dict method returns all configuration values."""
     config = CacheConfig(
+        cache_backend="fs",
         caching=True,
         shared_kuzu_lock=True,
         cache_host="test-host",
@@ -49,7 +53,9 @@ def test_cache_config_to_dict():
     config_dict = config.to_dict()
 
     assert config_dict == {
+        "cache_backend": "fs",
         "caching": True,
+        "auto_feedback": False,
         "shared_kuzu_lock": True,
         "cache_host": "test-host",
         "cache_port": 7000,
@@ -57,6 +63,8 @@ def test_cache_config_to_dict():
         "cache_password": None,
         "agentic_lock_expire": 100,
         "agentic_lock_timeout": 200,
+        "usage_logging": False,
+        "usage_logging_ttl": 604800,
     }
 
 

@@ -10,22 +10,30 @@ from kuzu.database import Database
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Any, List, Union, Optional, Tuple, Type
-
+from typing import Dict, Any, List, Union, Optional, Tuple, Type, Set
+from cognee.modules.observability import OtelStatusCode as StatusCode
+from cognee.exceptions import CogneeValidationError
 from cognee.shared.logging_utils import get_logger
 from cognee.infrastructure.utils.run_sync import run_sync
 from cognee.infrastructure.files.storage import get_file_storage
 from cognee.infrastructure.databases.graph.graph_db_interface import (
     GraphDBInterface,
-    record_graph_changes,
 )
 from cognee.infrastructure.engine import DataPoint
 from cognee.modules.storage.utils import JSONEncoder
 from cognee.modules.engine.utils.generate_timestamp_datapoint import date_to_int
 from cognee.tasks.temporal_graph.models import Timestamp
 from cognee.infrastructure.databases.cache.config import get_cache_config
+from cognee.modules.observability import new_span
+from cognee.modules.observability.tracing import (
+    COGNEE_DB_SYSTEM,
+    COGNEE_DB_QUERY,
+    COGNEE_DB_ROW_COUNT,
+    redact_secrets,
+)
 
 logger = get_logger()
+
 
 cache_config = get_cache_config()
 if cache_config.shared_kuzu_lock:
@@ -227,55 +235,64 @@ class KuzuAdapter(GraphDBInterface):
 
             - List[Tuple]: A list of tuples representing the query results.
         """
-        loop = asyncio.get_running_loop()
-        params = params or {}
+        with new_span("cognee.db.graph.query") as otel_span:
+            otel_span.set_attribute(COGNEE_DB_SYSTEM, "kuzu")
+            otel_span.set_attribute(COGNEE_DB_QUERY, redact_secrets(query[:500]))
 
-        def blocking_query():
-            lock_acquired = False
+            loop = asyncio.get_running_loop()
+            params = params or {}
+
+            def blocking_query():
+                lock_acquired = False
+                try:
+                    if cache_config.shared_kuzu_lock:
+                        self.redis_lock.acquire_lock()
+                        lock_acquired = True
+                    if not self.connection:
+                        logger.info("Reconnecting to Kuzu database...")
+                        self._initialize_connection()
+
+                    result = self.connection.execute(query, params)
+                    rows = []
+
+                    while result.has_next():
+                        row = result.get_next()
+                        processed_rows = []
+                        for val in row:
+                            if hasattr(val, "as_py"):
+                                val = val.as_py()
+                            processed_rows.append(val)
+                        rows.append(tuple(processed_rows))
+
+                    return rows
+                except Exception as e:
+                    logger.error(f"Query execution failed: {str(e)}")
+                    raise
+                finally:
+                    if cache_config.shared_kuzu_lock and lock_acquired:
+                        try:
+                            self.close()
+                        finally:
+                            self.redis_lock.release_lock()
+
             try:
                 if cache_config.shared_kuzu_lock:
-                    self.redis_lock.acquire_lock()
-                    lock_acquired = True
-                if not self.connection:
-                    logger.info("Reconnecting to Kuzu database...")
-                    self._initialize_connection()
+                    async with self._connection_change_lock:
+                        self.open_connections += 1
+                        logger.info(f"Open connections after open: {self.open_connections}")
+                        try:
+                            result = blocking_query()
+                        finally:
+                            self.open_connections -= 1
+                            logger.info(f"Open connections after close: {self.open_connections}")
+                else:
+                    result = await loop.run_in_executor(self.executor, blocking_query)
 
-                result = self.connection.execute(query, params)
-                rows = []
-
-                while result.has_next():
-                    row = result.get_next()
-                    processed_rows = []
-                    for val in row:
-                        if hasattr(val, "as_py"):
-                            val = val.as_py()
-                        processed_rows.append(val)
-                    rows.append(tuple(processed_rows))
-
-                return rows
-            except Exception as e:
-                logger.error(f"Query execution failed: {str(e)}")
-                raise
-            finally:
-                if cache_config.shared_kuzu_lock and lock_acquired:
-                    try:
-                        self.close()
-                    finally:
-                        self.redis_lock.release_lock()
-
-        if cache_config.shared_kuzu_lock:
-            async with self._connection_change_lock:
-                self.open_connections += 1
-                logger.info(f"Open connections after open: {self.open_connections}")
-                try:
-                    result = blocking_query()
-                finally:
-                    self.open_connections -= 1
-                    logger.info(f"Open connections after close: {self.open_connections}")
+                otel_span.set_attribute(COGNEE_DB_ROW_COUNT, len(result))
                 return result
-        else:
-            result = await loop.run_in_executor(self.executor, blocking_query)
-            return result
+            except Exception as e:
+                otel_span.set_status(StatusCode.ERROR, str(e))
+                otel_span.record_exception(e)
 
     def close(self):
         if self.connection:
@@ -439,7 +456,6 @@ class KuzuAdapter(GraphDBInterface):
             logger.error(f"Failed to add node: {e}")
             raise
 
-    @record_graph_changes
     async def add_nodes(self, nodes: List[DataPoint]) -> None:
         """
         Add multiple nodes to the graph in a batch operation.
@@ -736,7 +752,6 @@ class KuzuAdapter(GraphDBInterface):
             logger.error(f"Failed to add edge: {e}")
             raise
 
-    @record_graph_changes
     async def add_edges(self, edges: List[Tuple[str, str, str, Dict[str, Any]]]) -> None:
         """
         Add multiple edges in a batch operation.
@@ -861,7 +876,22 @@ class KuzuAdapter(GraphDBInterface):
             - List[Dict[str, Any]]: A list of dictionaries representing neighboring nodes'
               properties.
         """
-        return await self.get_neighbours(node_id)
+        query_str = """
+        MATCH (n:Node)-[r]-(m:Node)
+        WHERE n.id = $id
+        RETURN DISTINCT {
+            id: m.id,
+            name: m.name,
+            type: m.type,
+            properties: m.properties
+        }
+        """
+        try:
+            result = await self.query(query_str, {"id": node_id})
+            return [self._parse_node_properties(row[0]) for row in result] if result else []
+        except Exception as e:
+            logger.error(f"Failed to get neighbours for node {node_id}: {e}")
+            return []
 
     async def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -936,36 +966,223 @@ class KuzuAdapter(GraphDBInterface):
             logger.error(f"Failed to get nodes: {e}")
             return []
 
-    async def get_neighbours(self, node_id: str) -> List[Dict[str, Any]]:
-        """
-        Get all neighbouring nodes.
+    def _rows_to_dicts(self, rows: List, column_names: List[str]) -> List[Dict[str, Any]]:
+        """Convert query result rows to a list of dicts keyed by column names."""
+        result = []
+        for row in rows:
+            if not row or len(row) < len(column_names):
+                continue
+            result.append(dict(zip(column_names, row)))
+        return result
 
-        This method retrieves all neighboring nodes connected to a specified node and returns
-        them as a list of dictionaries. It may return an empty list if no neighbors exist or an
-        error occurs.
+    @staticmethod
+    def _resolve_edge_object_id(
+        properties: Dict[str, Any], edge_object_id_json: Optional[str]
+    ) -> Optional[str]:
+        """Resolve edge_object_id from properties or from edge_object_id_json string."""
+        edge_object_id = properties.get("edge_object_id")
+        if (not isinstance(edge_object_id, str) or not edge_object_id) and isinstance(
+            edge_object_id_json, str
+        ):
+            try:
+                parsed = json.loads(edge_object_id_json)
+                edge_object_id = parsed if isinstance(parsed, str) else None
+            except (TypeError, json.JSONDecodeError):
+                edge_object_id = None
+        return edge_object_id if isinstance(edge_object_id, str) and edge_object_id else None
 
-        Parameters:
-        -----------
+    _EDGE_BY_OBJECT_ID_COLUMNS = [
+        "from_id",
+        "to_id",
+        "relationship_name",
+        "edge_object_id_json",
+        "properties",
+    ]
 
-            - node_id (str): The identifier of the node for which to find neighbors.
-
-        Returns:
-        --------
-
-            - List[Dict[str, Any]]: A list of dictionaries representing neighboring nodes'
-              properties.
-        """
-        query_str = """
-        MATCH (n)-[r]-(m)
-        WHERE n.id = $id
-        RETURN DISTINCT properties(m)
-        """
-        try:
-            result = await self.query(query_str, {"id": node_id})
-            return [row[0] for row in result] if result else []
-        except Exception as e:
-            logger.error(f"Failed to get neighbours for node {node_id}: {e}")
+    async def _fetch_edge_rows_by_object_ids(
+        self, edge_object_ids: Set[str]
+    ) -> List[Dict[str, Any]]:
+        """Fetch edge rows (as dicts) for the given edge_object_ids."""
+        if not edge_object_ids:
             return []
+        requested_ids_json = [json.dumps(eid) for eid in edge_object_ids]
+        query = """
+        MATCH (from:Node)-[r:EDGE]->(to:Node)
+        WITH from, to, r, CAST(json_extract(r.properties, '$.edge_object_id') AS STRING) AS edge_object_id_json
+        WHERE edge_object_id_json IN $edge_object_ids_json
+        RETURN from.id AS from_id, to.id AS to_id, r.relationship_name AS relationship_name,
+               edge_object_id_json AS edge_object_id_json, r.properties AS properties
+        """
+        rows = await self.query(query, {"edge_object_ids_json": requested_ids_json})
+        return self._rows_to_dicts(rows, self._EDGE_BY_OBJECT_ID_COLUMNS)
+
+    def _build_node_feedback_updates(
+        self,
+        nodes: List[Dict[str, Any]],
+        node_feedback_weights: Dict[str, float],
+    ) -> List[Dict[str, Any]]:
+        """Build UNWIND items for node feedback weight updates."""
+        updates = []
+        for node in nodes:
+            node_id = node.get("id")
+            if not isinstance(node_id, str) or node_id not in node_feedback_weights:
+                continue
+            properties = {
+                k: v
+                for k, v in node.items()
+                if k not in {"id", "name", "type", "created_at", "updated_at"}
+            }
+            properties["feedback_weight"] = float(node_feedback_weights[node_id])
+            updates.append(
+                {"node_id": node_id, "properties": json.dumps(properties, cls=JSONEncoder)}
+            )
+        return updates
+
+    async def _execute_node_feedback_updates(self, updates: List[Dict[str, Any]]) -> Set[str]:
+        """Run node feedback weight UNWIND/SET; return set of updated node_ids."""
+        if not updates:
+            return set()
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+        query = """
+        UNWIND $items AS item
+        MATCH (n:Node)
+        WHERE n.id = item.node_id
+        SET n.properties = item.properties,
+            n.updated_at = timestamp($updated_at)
+        RETURN n.id AS node_id
+        """
+        result = await self.query(query, {"items": updates, "updated_at": now})
+        rows_dicts = self._rows_to_dicts(result, ["node_id"])
+        return {str(r["node_id"]) for r in rows_dicts if r.get("node_id") is not None}
+
+    def _build_edge_feedback_updates(
+        self,
+        edge_rows: List[Dict[str, Any]],
+        edge_feedback_weights: Dict[str, float],
+    ) -> List[Dict[str, Any]]:
+        """Build UNWIND items for edge feedback weight updates."""
+        edge_updates = []
+        for row in edge_rows:
+            properties_raw = row.get("properties")
+            if not properties_raw:
+                continue
+            try:
+                properties = json.loads(properties_raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            edge_object_id = self._resolve_edge_object_id(
+                properties, row.get("edge_object_id_json")
+            )
+            if not edge_object_id or edge_object_id not in edge_feedback_weights:
+                continue
+            properties["feedback_weight"] = float(edge_feedback_weights[edge_object_id])
+            edge_updates.append(
+                {
+                    "edge_object_id": edge_object_id,
+                    "from_id": str(row.get("from_id")),
+                    "to_id": str(row.get("to_id")),
+                    "relationship_name": str(row.get("relationship_name")),
+                    "properties": json.dumps(properties, cls=JSONEncoder),
+                }
+            )
+        return edge_updates
+
+    async def _execute_edge_feedback_updates(self, edge_updates: List[Dict[str, Any]]) -> Set[str]:
+        """Run edge feedback weight UNWIND/SET; return set of updated edge_object_ids."""
+        if not edge_updates:
+            return set()
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+        query = """
+        UNWIND $items AS item
+        MATCH (from:Node)-[r:EDGE]->(to:Node)
+        WHERE from.id = item.from_id
+          AND to.id = item.to_id
+          AND r.relationship_name = item.relationship_name
+        SET r.properties = item.properties,
+            r.updated_at = timestamp($updated_at)
+        RETURN item.edge_object_id AS edge_object_id
+        """
+        result = await self.query(query, {"items": edge_updates, "updated_at": now})
+        rows_dicts = self._rows_to_dicts(result, ["edge_object_id"])
+        return {str(r["edge_object_id"]) for r in rows_dicts if r.get("edge_object_id") is not None}
+
+    async def get_node_feedback_weights(self, node_ids: List[str]) -> Dict[str, float]:
+        if not node_ids:
+            return {}
+        valid_node_ids = [node_id for node_id in node_ids if isinstance(node_id, str) and node_id]
+        if not valid_node_ids:
+            return {}
+        nodes = await self.get_nodes(valid_node_ids)
+        result: Dict[str, float] = {}
+        for node in nodes:
+            node_id = node.get("id")
+            if not isinstance(node_id, str):
+                continue
+            value = node.get("feedback_weight", 0.5)
+            try:
+                result[node_id] = float(value)
+            except (TypeError, ValueError):
+                result[node_id] = 0.5
+        return result
+
+    async def set_node_feedback_weights(
+        self, node_feedback_weights: Dict[str, float]
+    ) -> Dict[str, bool]:
+        if not node_feedback_weights:
+            return {}
+        node_ids = list(node_feedback_weights.keys())
+        valid_node_ids = [nid for nid in node_ids if isinstance(nid, str) and nid]
+        if not valid_node_ids:
+            return {nid: False for nid in node_ids}
+        nodes = await self.get_nodes(valid_node_ids)
+        updates = self._build_node_feedback_updates(nodes, node_feedback_weights)
+        if not updates:
+            return {nid: False for nid in node_ids}
+        updated_ids = await self._execute_node_feedback_updates(updates)
+        return {nid: (nid in updated_ids) for nid in node_ids}
+
+    async def get_edge_feedback_weights(self, edge_object_ids: List[str]) -> Dict[str, float]:
+        if not edge_object_ids:
+            return {}
+        requested_ids = {eid for eid in edge_object_ids if isinstance(eid, str) and eid}
+        if not requested_ids:
+            return {}
+        edge_rows = await self._fetch_edge_rows_by_object_ids(requested_ids)
+        result: Dict[str, float] = {}
+        for row in edge_rows:
+            properties_raw = row.get("properties")
+            if not properties_raw:
+                continue
+            try:
+                properties = json.loads(properties_raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            edge_object_id = self._resolve_edge_object_id(
+                properties, row.get("edge_object_id_json")
+            )
+            if not edge_object_id or edge_object_id not in requested_ids:
+                continue
+            value = properties.get("feedback_weight", 0.5)
+            try:
+                result[edge_object_id] = float(value)
+            except (TypeError, ValueError):
+                result[edge_object_id] = 0.5
+        return result
+
+    async def set_edge_feedback_weights(
+        self, edge_feedback_weights: Dict[str, float]
+    ) -> Dict[str, bool]:
+        if not edge_feedback_weights:
+            return {}
+        requested_ids = {eid for eid in edge_feedback_weights if isinstance(eid, str) and eid}
+        if not requested_ids:
+            return {eid: False for eid in edge_feedback_weights}
+        edge_rows = await self._fetch_edge_rows_by_object_ids(requested_ids)
+        edge_updates = self._build_edge_feedback_updates(edge_rows, edge_feedback_weights)
+        if not edge_updates:
+            return {eid: False for eid in edge_feedback_weights}
+        updated_ids = await self._execute_edge_feedback_updates(edge_updates)
+        return {eid: (eid in updated_ids) for eid in edge_feedback_weights}
 
     async def get_predecessors(
         self, node_id: Union[str, UUID], edge_label: Optional[str] = None
@@ -1186,6 +1403,11 @@ class KuzuAdapter(GraphDBInterface):
               A tuple with two elements: a list of tuples of (node_id, properties) and a list of
               tuples of (source_id, target_id, relationship_name, properties).
         """
+
+        import time
+
+        start_time = time.time()
+
         try:
             nodes_query = """
             MATCH (n:Node)
@@ -1249,6 +1471,11 @@ class KuzuAdapter(GraphDBInterface):
                             },
                         )
                     )
+
+            retrieval_time = time.time() - start_time
+            logger.info(
+                f"Retrieved {len(nodes)} nodes and {len(edges)} edges in {retrieval_time:.2f} seconds"
+            )
             return formatted_nodes, formatted_edges
         except Exception as e:
             logger.error(f"Failed to get graph data: {e}")
@@ -1366,9 +1593,15 @@ class KuzuAdapter(GraphDBInterface):
                 params[param_name] = values
 
         where_clause = " AND ".join(where_clauses)
-        nodes_query = (
-            f"MATCH (n:Node) WHERE {where_clause} RETURN n.id, {{properties: n.properties}}"
-        )
+        nodes_query = f"""
+        MATCH (n:Node)
+        WHERE {where_clause}
+        RETURN n.id, {{
+            name: n.name,
+            type: n.type,
+            properties: n.properties
+        }}
+        """
         edges_query = f"""
         MATCH (n1:Node)-[r:EDGE]->(n2:Node)
         WHERE {where_clause.replace("n.", "n1.")} AND {where_clause.replace("n.", "n2.")}
@@ -1410,6 +1643,92 @@ class KuzuAdapter(GraphDBInterface):
                         )
                 formatted_edges.append((source_id, target_id, rel_type, props))
         return formatted_nodes, formatted_edges
+
+    async def get_id_filtered_graph_data(self, target_ids: list[str]):
+        """
+        Retrieve graph data filtered by specific node IDs, including their direct neighbors
+        and only edges where one endpoint matches those IDs.
+
+        Returns:
+            nodes: List[dict]   -> Each dict includes "id" and all node properties
+            edges: List[dict]   -> Each dict includes "source", "target", "type", "properties"
+        """
+        import time
+
+        start_time = time.time()
+
+        try:
+            if not target_ids:
+                logger.warning("No target IDs provided for ID-filtered graph retrieval.")
+                return [], []
+
+            if not all(isinstance(x, str) for x in target_ids):
+                raise CogneeValidationError("target_ids must be a list of strings")
+
+            query = """
+            MATCH (n:Node)-[r]->(m:Node)
+            WHERE n.id IN $target_ids OR m.id IN $target_ids
+            RETURN n.id, {
+                name: n.name,
+                type: n.type,
+                properties: n.properties
+            }, m.id, {
+                name: m.name,
+                type: m.type,
+                properties: m.properties
+            }, r.relationship_name, r.properties
+            """
+
+            result = await self.query(query, {"target_ids": target_ids})
+
+            if not result:
+                logger.info("No data returned for the supplied IDs")
+                return [], []
+
+            nodes_dict = {}
+            edges = []
+
+            for n_id, n_props, m_id, m_props, r_type, r_props_raw in result:
+                if n_props.get("properties"):
+                    try:
+                        additional_props = json.loads(n_props["properties"])
+                        n_props.update(additional_props)
+                        del n_props["properties"]
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse properties JSON for node {n_id}")
+
+                if m_props.get("properties"):
+                    try:
+                        additional_props = json.loads(m_props["properties"])
+                        m_props.update(additional_props)
+                        del m_props["properties"]
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse properties JSON for node {m_id}")
+
+                nodes_dict[n_id] = (n_id, n_props)
+                nodes_dict[m_id] = (m_id, m_props)
+
+                edge_props = {}
+                if r_props_raw:
+                    try:
+                        edge_props = json.loads(r_props_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"Failed to parse edge properties for {n_id}->{m_id}")
+
+                source_id = edge_props.get("source_node_id", n_id)
+                target_id = edge_props.get("target_node_id", m_id)
+                edges.append((source_id, target_id, r_type, edge_props))
+
+            retrieval_time = time.time() - start_time
+            logger.info(
+                f"ID-filtered retrieval: {len(nodes_dict)} nodes and {len(edges)} edges in {retrieval_time:.2f}s"
+            )
+
+            return list(nodes_dict.values()), edges
+
+        except Exception as e:
+            logger.error(f"Error during ID-filtered graph data retrieval: {str(e)}")
+            raise
 
     async def get_graph_metrics(self, include_optional=False) -> Dict[str, Any]:
         """
@@ -1721,67 +2040,6 @@ class KuzuAdapter(GraphDBInterface):
         result = await self.query(query)
         return [record[0] for record in result] if result else []
 
-    async def get_last_user_interaction_ids(self, limit: int) -> List[str]:
-        """
-        Retrieve the IDs of the most recent CogneeUserInteraction nodes.
-        Parameters:
-        -----------
-        - limit (int): The maximum number of interaction IDs to return.
-        Returns:
-        --------
-        - List[str]: A list of interaction IDs, sorted by created_at descending.
-        """
-
-        query = """
-        MATCH (n)
-        WHERE n.type = 'CogneeUserInteraction'
-        RETURN n.id as id
-        ORDER BY n.created_at DESC
-        LIMIT $limit
-        """
-        rows = await self.query(query, {"limit": limit})
-
-        id_list = [row[0] for row in rows]
-        return id_list
-
-    async def apply_feedback_weight(
-        self,
-        node_ids: List[str],
-        weight: float,
-    ) -> None:
-        """
-        Increment `feedback_weight` inside r.properties JSON for edges where
-        relationship_name = 'used_graph_element_to_answer'.
-
-        """
-        # Step 1: fetch matching edges
-        query = """
-            MATCH (n:Node)-[r:EDGE]->()
-            WHERE n.id IN $node_ids AND r.relationship_name = 'used_graph_element_to_answer'
-            RETURN r.properties, n.id
-            """
-        results = await self.query(query, {"node_ids": node_ids})
-
-        # Step 2: update JSON client-side
-        updates = []
-        for props_json, source_id in results:
-            try:
-                props = json.loads(props_json) if props_json else {}
-            except json.JSONDecodeError:
-                props = {}
-
-            props["feedback_weight"] = props.get("feedback_weight", 0) + weight
-            updates.append((source_id, json.dumps(props)))
-
-        # Step 3: write back
-        for node_id, new_props in updates:
-            update_query = """
-                MATCH (n:Node)-[r:EDGE]->()
-                WHERE n.id = $node_id AND r.relationship_name = 'used_graph_element_to_answer'
-                SET r.properties = $props
-                """
-            await self.query(update_query, {"node_id": node_id, "props": new_props})
-
     async def collect_events(self, ids: List[str]) -> Any:
         """
         Collect all Event-type nodes reachable within 1..2 hops
@@ -1902,3 +2160,134 @@ class KuzuAdapter(GraphDBInterface):
         time_ids_list = [item[0] for item in time_nodes]
 
         return ", ".join(f"'{uid}'" for uid in time_ids_list)
+
+    async def get_triplets_batch(self, offset: int, limit: int) -> list[dict[str, Any]]:
+        """
+        Retrieve a batch of triplets (start_node, relationship, end_node) from the graph.
+
+        Parameters:
+        -----------
+            - offset (int): Number of triplets to skip before returning results.
+            - limit (int): Maximum number of triplets to return.
+
+        Returns:
+        --------
+            - list[dict[str, Any]]: A list of triplets, where each triplet is a dictionary
+              with keys: 'start_node', 'relationship_properties', 'end_node'.
+
+        Raises:
+        -------
+            - ValueError: If offset or limit are negative.
+            - Exception: Re-raises any exceptions from query execution.
+        """
+        if offset < 0:
+            raise ValueError(f"Offset must be non-negative, got {offset}")
+        if limit < 0:
+            raise ValueError(f"Limit must be non-negative, got {limit}")
+
+        query = """
+        MATCH (start_node:Node)-[relationship:EDGE]->(end_node:Node)
+        RETURN {
+            start_node: {
+                id: start_node.id,
+                name: start_node.name,
+                type: start_node.type,
+                properties: start_node.properties
+            },
+            relationship_properties: {
+                relationship_name: relationship.relationship_name,
+                properties: relationship.properties
+            },
+            end_node: {
+                id: end_node.id,
+                name: end_node.name,
+                type: end_node.type,
+                properties: end_node.properties
+            }
+        } AS triplet
+        SKIP $offset LIMIT $limit
+        """
+
+        try:
+            results = await self.query(query, {"offset": offset, "limit": limit})
+        except Exception as e:
+            logger.error(f"Failed to execute triplet query: {str(e)}")
+            logger.error(f"Query: {query}")
+            logger.error(f"Parameters: offset={offset}, limit={limit}")
+            raise
+
+        triplets = []
+        for idx, row in enumerate(results):
+            try:
+                if not row or len(row) == 0:
+                    logger.warning(f"Skipping empty row at index {idx} in triplet batch")
+                    continue
+
+                if not isinstance(row[0], dict):
+                    logger.warning(
+                        f"Skipping invalid row at index {idx}: expected dict, got {type(row[0])}"
+                    )
+                    continue
+
+                triplet = row[0]
+
+                if "start_node" not in triplet:
+                    logger.warning(f"Skipping triplet at index {idx}: missing 'start_node' key")
+                    continue
+
+                if not isinstance(triplet["start_node"], dict):
+                    logger.warning(f"Skipping triplet at index {idx}: 'start_node' is not a dict")
+                    continue
+
+                triplet["start_node"] = self._parse_node_properties(triplet["start_node"].copy())
+
+                if "relationship_properties" not in triplet:
+                    logger.warning(
+                        f"Skipping triplet at index {idx}: missing 'relationship_properties' key"
+                    )
+                    continue
+
+                if not isinstance(triplet["relationship_properties"], dict):
+                    logger.warning(
+                        f"Skipping triplet at index {idx}: 'relationship_properties' is not a dict"
+                    )
+                    continue
+
+                rel_props = triplet["relationship_properties"].copy()
+                relationship_name = rel_props.get("relationship_name") or ""
+
+                if rel_props.get("properties"):
+                    try:
+                        parsed_props = json.loads(rel_props["properties"])
+                        if isinstance(parsed_props, dict):
+                            rel_props.update(parsed_props)
+                            del rel_props["properties"]
+                        else:
+                            logger.warning(
+                                f"Parsed relationship properties is not a dict for triplet at index {idx}"
+                            )
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(
+                            f"Failed to parse relationship properties JSON for triplet at index {idx}: {e}"
+                        )
+
+                rel_props["relationship_name"] = relationship_name
+                triplet["relationship_properties"] = rel_props
+
+                if "end_node" not in triplet:
+                    logger.warning(f"Skipping triplet at index {idx}: missing 'end_node' key")
+                    continue
+
+                if not isinstance(triplet["end_node"], dict):
+                    logger.warning(f"Skipping triplet at index {idx}: 'end_node' is not a dict")
+                    continue
+
+                triplet["end_node"] = self._parse_node_properties(triplet["end_node"].copy())
+
+                triplets.append(triplet)
+
+            except Exception as e:
+                logger.error(f"Error processing triplet at index {idx}: {e}", exc_info=True)
+                continue
+
+        return triplets

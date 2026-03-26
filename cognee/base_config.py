@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Optional
 from functools import lru_cache
 from cognee.root_dir import get_absolute_path, ensure_absolute_path
@@ -11,6 +12,9 @@ class BaseConfig(BaseSettings):
     data_root_directory: str = get_absolute_path(".data_storage")
     system_root_directory: str = get_absolute_path(".cognee_system")
     cache_root_directory: str = get_absolute_path(".cognee_cache")
+    logs_root_directory: str = os.getenv(
+        "COGNEE_LOGS_DIR", str(os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs"))
+    )
     monitoring_tool: object = Observer.NONE
 
     @pydantic.model_validator(mode="after")
@@ -30,6 +34,8 @@ class BaseConfig(BaseSettings):
         # Require absolute paths for root directories
         self.data_root_directory = ensure_absolute_path(self.data_root_directory)
         self.system_root_directory = ensure_absolute_path(self.system_root_directory)
+        self.logs_root_directory = ensure_absolute_path(self.logs_root_directory)
+
         # Set monitoring tool based on available keys
         if self.langfuse_public_key and self.langfuse_secret_key:
             self.monitoring_tool = Observer.LANGFUSE
@@ -41,6 +47,17 @@ class BaseConfig(BaseSettings):
     langfuse_host: Optional[str] = os.getenv("LANGFUSE_HOST")
     default_user_email: Optional[str] = os.getenv("DEFAULT_USER_EMAIL")
     default_user_password: Optional[str] = os.getenv("DEFAULT_USER_PASSWORD")
+
+    # OpenTelemetry / tracing
+    cognee_tracing_enabled: bool = os.getenv("COGNEE_TRACING_ENABLED", "false").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    otel_service_name: str = os.getenv("OTEL_SERVICE_NAME", "cognee")
+    otel_exporter_otlp_endpoint: Optional[str] = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    otel_exporter_otlp_headers: Optional[str] = os.getenv("OTEL_EXPORTER_OTLP_HEADERS")
+
     model_config = SettingsConfigDict(env_file=".env", extra="allow")
 
     def to_dict(self) -> dict:
@@ -49,6 +66,7 @@ class BaseConfig(BaseSettings):
             "system_root_directory": self.system_root_directory,
             "monitoring_tool": self.monitoring_tool,
             "cache_root_directory": self.cache_root_directory,
+            "logs_root_directory": self.logs_root_directory,
         }
 
 

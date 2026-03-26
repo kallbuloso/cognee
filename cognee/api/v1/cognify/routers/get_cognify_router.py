@@ -17,6 +17,8 @@ from cognee.modules.graph.methods import get_formatted_graph_data
 from cognee.modules.users.get_user_manager import get_user_manager_context
 from cognee.infrastructure.databases.relational import get_relational_engine
 from cognee.modules.users.authentication.default.default_jwt_strategy import DefaultJWTStrategy
+from cognee.shared.data_models import KnowledgeGraph
+from cognee.shared.graph_model_utils import graph_schema_to_graph_model
 from cognee.modules.pipelines.models.PipelineRunInfo import (
     PipelineRunCompleted,
     PipelineRunInfo,
@@ -29,7 +31,8 @@ from cognee.modules.pipelines.queues.pipeline_run_info_queues import (
 )
 from cognee.shared.logging_utils import get_logger
 from cognee.shared.utils import send_telemetry
-
+from cognee.shared.usage_logger import log_usage
+from cognee import __version__ as cognee_version
 
 logger = get_logger("api.cognify")
 
@@ -38,8 +41,19 @@ class CognifyPayloadDTO(InDTO):
     datasets: Optional[List[str]] = Field(default=None)
     dataset_ids: Optional[List[UUID]] = Field(default=None, examples=[[]])
     run_in_background: Optional[bool] = Field(default=False)
+    graph_model: Optional[dict] = Field(default=None, examples=[{}])
     custom_prompt: Optional[str] = Field(
         default="", description="Custom prompt for entity extraction and graph generation"
+    )
+    ontology_key: Optional[List[str]] = Field(
+        default=None,
+        examples=[[]],
+        description="Reference to one or more previously uploaded ontologies",
+    )
+    chunks_per_batch: Optional[int] = Field(
+        default=None,
+        description="Number of chunks to process per task batch in Cognify (overrides default).",
+        examples=[10, 20, 50, 100],
     )
 
 
@@ -47,6 +61,7 @@ def get_cognify_router() -> APIRouter:
     router = APIRouter()
 
     @router.post("", response_model=dict)
+    @log_usage(function_name="POST /v1/cognify", log_type="api_endpoint")
     async def cognify(payload: CognifyPayloadDTO, user: User = Depends(get_authenticated_user)):
         """
         Transform datasets into structured knowledge graphs through cognitive processing.
@@ -68,6 +83,7 @@ def get_cognify_router() -> APIRouter:
         - **dataset_ids** (Optional[List[UUID]]): List of existing dataset UUIDs to process. UUIDs allow processing of datasets not owned by the user (if permitted).
         - **run_in_background** (Optional[bool]): Whether to execute processing asynchronously. Defaults to False (blocking).
         - **custom_prompt** (Optional[str]): Custom prompt for entity extraction and graph generation. If provided, this prompt will be used instead of the default prompts for knowledge graph extraction.
+        - **ontology_key** (Optional[List[str]]): Reference to one or more previously uploaded ontology files to use for knowledge graph construction.
 
         ## Response
         - **Blocking execution**: Complete pipeline run information with entity counts, processing duration, and success/failure status
@@ -82,7 +98,8 @@ def get_cognify_router() -> APIRouter:
         {
             "datasets": ["research_papers", "documentation"],
             "run_in_background": false,
-            "custom_prompt": "Extract entities focusing on technical concepts and their relationships. Identify key technologies, methodologies, and their interconnections."
+            "custom_prompt": "Extract entities focusing on technical concepts and their relationships. Identify key technologies, methodologies, and their interconnections.",
+            "ontology_key": ["medical_ontology_v1"]
         }
         ```
 
@@ -98,6 +115,7 @@ def get_cognify_router() -> APIRouter:
             user.id,
             additional_properties={
                 "endpoint": "POST /v1/cognify",
+                "cognee_version": cognee_version,
             },
         )
 
@@ -107,15 +125,45 @@ def get_cognify_router() -> APIRouter:
             )
 
         from cognee.api.v1.cognify import cognify as cognee_cognify
+        from cognee.api.v1.ontologies.ontologies import OntologyService
 
         try:
             datasets = payload.dataset_ids if payload.dataset_ids else payload.datasets
+            config_to_use = None
+
+            if payload.ontology_key:
+                ontology_service = OntologyService()
+                ontology_contents = ontology_service.get_ontology_contents(
+                    payload.ontology_key, user
+                )
+
+                from cognee.modules.ontology.ontology_config import Config
+                from cognee.modules.ontology.rdf_xml.RDFLibOntologyResolver import (
+                    RDFLibOntologyResolver,
+                )
+                from io import StringIO
+
+                ontology_streams = [StringIO(content) for content in ontology_contents]
+                config_to_use: Config = {
+                    "ontology_config": {
+                        "ontology_resolver": RDFLibOntologyResolver(ontology_file=ontology_streams)
+                    }
+                }
+
+            if not payload.graph_model:
+                graph_model = KnowledgeGraph
+            else:
+                # If a custom graph model is provided, convert it from dict to a Pydantic model class
+                graph_model = graph_schema_to_graph_model(payload.graph_model)
 
             cognify_run = await cognee_cognify(
                 datasets,
                 user,
+                graph_model=graph_model,
+                config=config_to_use,
                 run_in_background=payload.run_in_background,
                 custom_prompt=payload.custom_prompt,
+                chunks_per_batch=payload.chunks_per_batch,
             )
 
             # If any cognify run errored return JSONResponse with proper error status code
