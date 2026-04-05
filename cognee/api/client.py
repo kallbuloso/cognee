@@ -15,19 +15,20 @@ from fastapi.openapi.utils import get_openapi
 
 from cognee.exceptions import CogneeApiError
 from cognee.shared.logging_utils import get_logger, setup_logging
-from cognee.api.health import health_checker, HealthStatus
 from cognee.api.v1.cloud.routers import get_checks_router
 from cognee.api.v1.notebooks.routers import get_notebooks_router
 from cognee.api.v1.permissions.routers import get_permissions_router
 from cognee.api.v1.settings.routers import get_settings_router
 from cognee.api.v1.datasets.routers import get_datasets_router
-from cognee.api.v1.cognify.routers import get_code_pipeline_router, get_cognify_router
+from cognee.api.v1.cognify.routers import get_cognify_router
 from cognee.api.v1.search.routers import get_search_router
+from cognee.api.v1.ontologies.routers.get_ontology_router import get_ontology_router
 from cognee.api.v1.memify.routers import get_memify_router
 from cognee.api.v1.add.routers import get_add_router
 from cognee.api.v1.delete.routers import get_delete_router
 from cognee.api.v1.responses.routers import get_responses_router
 from cognee.api.v1.sync.routers import get_sync_router
+from cognee.api.v1.health.routers import get_health_router
 from cognee.api.v1.update.routers import get_update_router
 from cognee.api.v1.users.routers import (
     get_auth_router,
@@ -36,9 +37,13 @@ from cognee.api.v1.users.routers import (
     get_verify_router,
     get_users_router,
     get_visualize_router,
+    get_configuration_router,
+    get_user_id_by_email_router,
 )
 from cognee.modules.users.methods.get_authenticated_user import REQUIRE_AUTHENTICATION
 
+# Ensure application logging is configured for container stdout/stderr
+setup_logging()
 logger = get_logger()
 
 if os.getenv("ENV", "prod") == "prod":
@@ -73,6 +78,9 @@ async def lifespan(app: FastAPI):
     from cognee.modules.users.methods import get_default_user
 
     await get_default_user()
+
+    # Emit a clear startup message for docker logs
+    logger.info("Backend server has started")
 
     yield
 
@@ -169,59 +177,6 @@ async def exception_handler(_: Request, exc: CogneeApiError) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"detail": detail["message"]})
 
 
-@app.get("/")
-async def root():
-    """
-    Root endpoint that returns a welcome message.
-    """
-    return {"message": "Hello, World, I am alive!"}
-
-
-@app.get("/health")
-async def health_check():
-    """
-    Health check endpoint for liveness/readiness probes.
-    """
-    try:
-        health_status = await health_checker.get_health_status(detailed=False)
-        status_code = 503 if health_status.status == HealthStatus.UNHEALTHY else 200
-
-        return JSONResponse(
-            status_code=status_code,
-            content={
-                "status": "ready" if status_code == 200 else "not ready",
-                "health": health_status.status,
-                "version": health_status.version,
-            },
-        )
-    except Exception as e:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "not ready", "reason": f"health check failed: {str(e)}"},
-        )
-
-
-@app.get("/health/detailed")
-async def detailed_health_check():
-    """
-    Comprehensive health status with component details.
-    """
-    try:
-        health_status = await health_checker.get_health_status(detailed=True)
-        status_code = 200
-        if health_status.status == HealthStatus.UNHEALTHY:
-            status_code = 503
-        elif health_status.status == HealthStatus.DEGRADED:
-            status_code = 200  # Degraded is still operational
-
-        return JSONResponse(status_code=status_code, content=health_status.model_dump())
-    except Exception as e:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "unhealthy", "error": f"Health check system failure: {str(e)}"},
-        )
-
-
 app.include_router(get_auth_router(), prefix="/api/v1/auth", tags=["auth"])
 
 app.include_router(
@@ -258,9 +213,17 @@ app.include_router(
 
 app.include_router(get_datasets_router(), prefix="/api/v1/datasets", tags=["datasets"])
 
+app.include_router(get_ontology_router(), prefix="/api/v1/ontologies", tags=["ontologies"])
+
 app.include_router(get_settings_router(), prefix="/api/v1/settings", tags=["settings"])
 
 app.include_router(get_visualize_router(), prefix="/api/v1/visualize", tags=["visualize"])
+
+app.include_router(
+    get_configuration_router(),
+    prefix="/api/v1/configuration",
+    tags=["configuration"],
+)
 
 app.include_router(get_delete_router(), prefix="/api/v1/delete", tags=["delete"])
 
@@ -270,12 +233,14 @@ app.include_router(get_responses_router(), prefix="/api/v1/responses", tags=["re
 
 app.include_router(get_sync_router(), prefix="/api/v1/sync", tags=["sync"])
 
-codegraph_routes = get_code_pipeline_router()
-if codegraph_routes:
-    app.include_router(codegraph_routes, prefix="/api/v1/code-pipeline", tags=["code-pipeline"])
-
 app.include_router(
     get_users_router(),
+    prefix="/api/v1/users",
+    tags=["users"],
+)
+
+app.include_router(
+    get_user_id_by_email_router(),
     prefix="/api/v1/users",
     tags=["users"],
 )
@@ -291,6 +256,20 @@ app.include_router(
     prefix="/api/v1/checks",
     tags=["checks"],
 )
+
+app.include_router(
+    get_health_router(),
+    prefix="/health",
+    tags=["health"],
+)
+
+
+@app.get("/")
+async def root():
+    """
+    Root endpoint that returns a welcome message.
+    """
+    return {"message": "Hello, World, I am alive!"}
 
 
 def start_api_server(host: str = "0.0.0.0", port: int = 8000):

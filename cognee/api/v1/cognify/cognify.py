@@ -1,8 +1,9 @@
 import asyncio
 from pydantic import BaseModel
-from typing import Union, Optional
+from typing import Union, Optional, List
 from uuid import UUID
 
+from cognee.modules.cognify.config import get_cognify_config
 from cognee.modules.ontology.ontology_env_config import get_ontology_env_config
 from cognee.shared.logging_utils import get_logger
 from cognee.shared.data_models import KnowledgeGraph
@@ -19,21 +20,23 @@ from cognee.modules.ontology.get_default_ontology_resolver import (
 from cognee.modules.users.models import User
 
 from cognee.tasks.documents import (
-    check_permissions_on_dataset,
     classify_documents,
     extract_chunks_from_documents,
 )
 from cognee.tasks.graph import extract_graph_from_data
 from cognee.tasks.storage import add_data_points
 from cognee.tasks.summarization import summarize_text
+from cognee.tasks.ingestion.extract_dlt_fk_edges import extract_dlt_fk_edges
 from cognee.modules.pipelines.layers.pipeline_execution_mode import get_pipeline_executor
 from cognee.tasks.temporal_graph.extract_events_and_entities import extract_events_and_timestamps
 from cognee.tasks.temporal_graph.extract_knowledge_graph_from_events import (
     extract_knowledge_graph_from_events,
 )
+from cognee.modules.observability import new_span, COGNEE_PIPELINE_NAME, COGNEE_RESULT_SUMMARY
 
 
 logger = get_logger("cognify")
+
 
 update_status_lock = asyncio.Lock()
 
@@ -53,6 +56,7 @@ async def cognify(
     custom_prompt: Optional[str] = None,
     temporal_cognify: bool = False,
     data_per_batch: int = 20,
+    **kwargs,
 ):
     """
     Transform ingested data into a structured knowledge graph.
@@ -78,12 +82,11 @@ async def cognify(
 
     Processing Pipeline:
         1. **Document Classification**: Identifies document types and structures
-        2. **Permission Validation**: Ensures user has processing rights
-        3. **Text Chunking**: Breaks content into semantically meaningful segments
-        4. **Entity Extraction**: Identifies key concepts, people, places, organizations
-        5. **Relationship Detection**: Discovers connections between entities
-        6. **Graph Construction**: Builds semantic knowledge graph with embeddings
-        7. **Content Summarization**: Creates hierarchical summaries for navigation
+        2. **Text Chunking**: Breaks content into semantically meaningful segments
+        3. **Entity Extraction**: Identifies key concepts, people, places, organizations
+        4. **Relationship Detection**: Discovers connections between entities
+        5. **Graph Construction**: Builds semantic knowledge graph with embeddings
+        6. **Content Summarization**: Creates hierarchical summaries for navigation
 
     Graph Model Customization:
         The `graph_model` parameter allows custom knowledge structures:
@@ -194,53 +197,73 @@ async def cognify(
         - LLM_RATE_LIMIT_ENABLED: Enable rate limiting (default: False)
         - LLM_RATE_LIMIT_REQUESTS: Max requests per interval (default: 60)
     """
-    if config is None:
-        ontology_config = get_ontology_env_config()
-        if (
-            ontology_config.ontology_file_path
-            and ontology_config.ontology_resolver
-            and ontology_config.matching_strategy
-        ):
-            config: Config = {
-                "ontology_config": {
-                    "ontology_resolver": get_ontology_resolver_from_env(**ontology_config.to_dict())
+    with new_span("cognee.api.cognify") as span:
+        span.set_attribute(COGNEE_PIPELINE_NAME, "cognify")
+        if datasets is not None:
+            span.set_attribute("cognee.cognify.datasets", str(datasets))
+
+        if config is None:
+            ontology_config = get_ontology_env_config()
+            if (
+                ontology_config.ontology_file_path
+                and ontology_config.ontology_resolver
+                and ontology_config.matching_strategy
+            ):
+                config: Config = {
+                    "ontology_config": {
+                        "ontology_resolver": get_ontology_resolver_from_env(
+                            **ontology_config.to_dict()
+                        )
+                    }
                 }
-            }
+            else:
+                config: Config = {
+                    "ontology_config": {"ontology_resolver": get_default_ontology_resolver()}
+                }
+
+        if temporal_cognify:
+            tasks = await get_temporal_tasks(
+                user=user,
+                chunker=chunker,
+                chunk_size=chunk_size,
+                chunks_per_batch=chunks_per_batch,
+            )
         else:
-            config: Config = {
-                "ontology_config": {"ontology_resolver": get_default_ontology_resolver()}
-            }
+            tasks = await get_default_tasks(
+                user=user,
+                graph_model=graph_model,
+                chunker=chunker,
+                chunk_size=chunk_size,
+                config=config,
+                custom_prompt=custom_prompt,
+                chunks_per_batch=chunks_per_batch,
+                **kwargs,
+            )
 
-    if temporal_cognify:
-        tasks = await get_temporal_tasks(
-            user=user, chunker=chunker, chunk_size=chunk_size, chunks_per_batch=chunks_per_batch
-        )
-    else:
-        tasks = await get_default_tasks(
+        # By calling get pipeline executor we get a function that will have the run_pipeline run in the background or a function that we will need to wait for
+        pipeline_executor_func = get_pipeline_executor(run_in_background=run_in_background)
+
+        # Run the run_pipeline in the background or blocking based on executor
+        result = await pipeline_executor_func(
+            pipeline=run_pipeline,
+            tasks=tasks,
             user=user,
-            graph_model=graph_model,
-            chunker=chunker,
-            chunk_size=chunk_size,
-            config=config,
-            custom_prompt=custom_prompt,
-            chunks_per_batch=chunks_per_batch,
+            datasets=datasets,
+            vector_db_config=vector_db_config,
+            graph_db_config=graph_db_config,
+            incremental_loading=incremental_loading,
+            use_pipeline_cache=True,
+            pipeline_name="cognify_pipeline",
+            data_per_batch=data_per_batch,
         )
 
-    # By calling get pipeline executor we get a function that will have the run_pipeline run in the background or a function that we will need to wait for
-    pipeline_executor_func = get_pipeline_executor(run_in_background=run_in_background)
+        dataset_desc = str(datasets) if datasets else "all datasets"
+        span.set_attribute(
+            COGNEE_RESULT_SUMMARY,
+            f"Cognify completed for {dataset_desc}",
+        )
 
-    # Run the run_pipeline in the background or blocking based on executor
-    return await pipeline_executor_func(
-        pipeline=run_pipeline,
-        tasks=tasks,
-        user=user,
-        datasets=datasets,
-        vector_db_config=vector_db_config,
-        graph_db_config=graph_db_config,
-        incremental_loading=incremental_loading,
-        pipeline_name="cognify_pipeline",
-        data_per_batch=data_per_batch,
-    )
+        return result
 
 
 async def get_default_tasks(  # TODO: Find out a better way to do this (Boris's comment)
@@ -250,7 +273,8 @@ async def get_default_tasks(  # TODO: Find out a better way to do this (Boris's 
     chunk_size: int = None,
     config: Config = None,
     custom_prompt: Optional[str] = None,
-    chunks_per_batch: int = 100,
+    chunks_per_batch: int = None,
+    **kwargs,
 ) -> list[Task]:
     if config is None:
         ontology_config = get_ontology_env_config()
@@ -269,12 +293,16 @@ async def get_default_tasks(  # TODO: Find out a better way to do this (Boris's 
                 "ontology_config": {"ontology_resolver": get_default_ontology_resolver()}
             }
 
+    cognify_config = get_cognify_config()
+    embed_triplets = cognify_config.triplet_embedding
+
     if chunks_per_batch is None:
-        chunks_per_batch = 100
+        chunks_per_batch = (
+            cognify_config.chunks_per_batch if cognify_config.chunks_per_batch is not None else 100
+        )
 
     default_tasks = [
         Task(classify_documents),
-        Task(check_permissions_on_dataset, user=user, permissions=["write"]),
         Task(
             extract_chunks_from_documents,
             max_chunk_size=chunk_size or get_max_chunk_tokens(),
@@ -286,33 +314,38 @@ async def get_default_tasks(  # TODO: Find out a better way to do this (Boris's 
             config=config,
             custom_prompt=custom_prompt,
             task_config={"batch_size": chunks_per_batch},
+            **kwargs,
         ),  # Generate knowledge graphs from the document chunks.
         Task(
             summarize_text,
             task_config={"batch_size": chunks_per_batch},
         ),
-        Task(add_data_points, task_config={"batch_size": chunks_per_batch}),
+        Task(
+            add_data_points,
+            embed_triplets=embed_triplets,
+            task_config={"batch_size": chunks_per_batch},
+        ),
+        Task(extract_dlt_fk_edges),
     ]
 
     return default_tasks
 
 
 async def get_temporal_tasks(
-    user: User = None, chunker=TextChunker, chunk_size: int = None, chunks_per_batch: int = 10
+    user: User = None, chunker=TextChunker, chunk_size: int = None, chunks_per_batch: int = None
 ) -> list[Task]:
     """
     Builds and returns a list of temporal processing tasks to be executed in sequence.
 
     The pipeline includes:
     1. Document classification.
-    2. Dataset permission checks (requires "write" access).
-    3. Document chunking with a specified or default chunk size.
-    4. Event and timestamp extraction from chunks.
-    5. Knowledge graph extraction from events.
-    6. Batched insertion of data points.
+    2. Document chunking with a specified or default chunk size.
+    3. Event and timestamp extraction from chunks.
+    4. Knowledge graph extraction from events.
+    5. Batched insertion of data points.
 
     Args:
-        user (User, optional): The user requesting task execution, used for permission checks.
+        user (User, optional): The user requesting task execution.
         chunker (Callable, optional): A text chunking function/class to split documents. Defaults to TextChunker.
         chunk_size (int, optional): Maximum token size per chunk. If not provided, uses system default.
         chunks_per_batch (int, optional): Number of chunks to process in a single batch in Cognify
@@ -321,11 +354,13 @@ async def get_temporal_tasks(
         list[Task]: A list of Task objects representing the temporal processing pipeline.
     """
     if chunks_per_batch is None:
-        chunks_per_batch = 10
+        from cognee.modules.cognify.config import get_cognify_config
+
+        configured = get_cognify_config().chunks_per_batch
+        chunks_per_batch = configured if configured is not None else 10
 
     temporal_tasks = [
         Task(classify_documents),
-        Task(check_permissions_on_dataset, user=user, permissions=["write"]),
         Task(
             extract_chunks_from_documents,
             max_chunk_size=chunk_size or get_max_chunk_tokens(),

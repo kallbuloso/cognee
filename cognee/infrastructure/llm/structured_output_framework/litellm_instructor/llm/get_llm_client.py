@@ -24,6 +24,7 @@ class LLMProvider(Enum):
     - CUSTOM: Represents a custom provider option.
     - GEMINI: Represents the Gemini provider.
     - MISTRAL: Represents the Mistral AI provider.
+    - BEDROCK: Represents the AWS Bedrock provider.
     """
 
     OPENAI = "openai"
@@ -32,6 +33,8 @@ class LLMProvider(Enum):
     CUSTOM = "custom"
     GEMINI = "gemini"
     MISTRAL = "mistral"
+    BEDROCK = "bedrock"
+    LLAMA_CPP = "llama_cpp"
 
 
 def get_llm_client(raise_api_key_error: bool = True):
@@ -66,6 +69,8 @@ def get_llm_client(raise_api_key_error: bool = True):
         else llm_config.llm_max_completion_tokens
     )
 
+    llm_args = llm_config.llm_args
+
     if provider == LLMProvider.OPENAI:
         if llm_config.llm_api_key is None and raise_api_key_error:
             raise LLMAPIKeyNotSetError()
@@ -81,10 +86,12 @@ def get_llm_client(raise_api_key_error: bool = True):
             model=llm_config.llm_model,
             transcription_model=llm_config.transcription_model,
             max_completion_tokens=max_completion_tokens,
+            instructor_mode=llm_config.llm_instructor_mode.lower(),
             streaming=llm_config.llm_streaming,
             fallback_api_key=llm_config.fallback_api_key,
             fallback_endpoint=llm_config.fallback_endpoint,
             fallback_model=llm_config.fallback_model,
+            llm_args=llm_args,
         )
 
     elif provider == LLMProvider.OLLAMA:
@@ -100,7 +107,9 @@ def get_llm_client(raise_api_key_error: bool = True):
             llm_config.llm_api_key,
             llm_config.llm_model,
             "Ollama",
-            max_completion_tokens=max_completion_tokens,
+            max_completion_tokens,
+            instructor_mode=llm_config.llm_instructor_mode.lower(),
+            llm_args=llm_args,
         )
 
     elif provider == LLMProvider.ANTHROPIC:
@@ -109,7 +118,11 @@ def get_llm_client(raise_api_key_error: bool = True):
         )
 
         return AnthropicAdapter(
-            max_completion_tokens=max_completion_tokens, model=llm_config.llm_model
+            llm_config.llm_api_key,
+            llm_config.llm_model,
+            max_completion_tokens,
+            instructor_mode=llm_config.llm_instructor_mode.lower(),
+            llm_args=llm_args,
         )
 
     elif provider == LLMProvider.CUSTOM:
@@ -121,14 +134,15 @@ def get_llm_client(raise_api_key_error: bool = True):
         )
 
         return GenericAPIAdapter(
-            llm_config.llm_endpoint,
             llm_config.llm_api_key,
             llm_config.llm_model,
+            max_completion_tokens,
             "Custom",
-            max_completion_tokens=max_completion_tokens,
+            instructor_mode=llm_config.llm_instructor_mode.lower(),
             fallback_api_key=llm_config.fallback_api_key,
             fallback_endpoint=llm_config.fallback_endpoint,
             fallback_model=llm_config.fallback_model,
+            llm_args=llm_args,
         )
 
     elif provider == LLMProvider.GEMINI:
@@ -145,10 +159,12 @@ def get_llm_client(raise_api_key_error: bool = True):
             max_completion_tokens=max_completion_tokens,
             endpoint=llm_config.llm_endpoint,
             api_version=llm_config.llm_api_version,
+            instructor_mode=llm_config.llm_instructor_mode.lower(),
+            llm_args=llm_args,
         )
 
     elif provider == LLMProvider.MISTRAL:
-        if llm_config.llm_api_key is None:
+        if llm_config.llm_api_key is None and raise_api_key_error:
             raise LLMAPIKeyNotSetError()
 
         from cognee.infrastructure.llm.structured_output_framework.litellm_instructor.llm.mistral.adapter import (
@@ -160,22 +176,49 @@ def get_llm_client(raise_api_key_error: bool = True):
             model=llm_config.llm_model,
             max_completion_tokens=max_completion_tokens,
             endpoint=llm_config.llm_endpoint,
+            instructor_mode=llm_config.llm_instructor_mode.lower(),
+            llm_args=llm_args,
         )
 
-    elif provider == LLMProvider.MISTRAL:
-        if llm_config.llm_api_key is None:
-            raise LLMAPIKeyNotSetError()
+    elif provider == LLMProvider.BEDROCK:
+        # if llm_config.llm_api_key is None and raise_api_key_error:
+        #     raise LLMAPIKeyNotSetError()
 
-        from cognee.infrastructure.llm.structured_output_framework.litellm_instructor.llm.mistral.adapter import (
-            MistralAdapter,
+        from cognee.infrastructure.llm.structured_output_framework.litellm_instructor.llm.bedrock.adapter import (
+            BedrockAdapter,
         )
 
-        return MistralAdapter(
+        return BedrockAdapter(
+            model=llm_config.llm_model,
             api_key=llm_config.llm_api_key,
+            max_completion_tokens=max_completion_tokens,
+            streaming=llm_config.llm_streaming,
+            instructor_mode=llm_config.llm_instructor_mode.lower(),
+            llm_args=llm_args,
+        )
+
+    elif provider == LLMProvider.LLAMA_CPP:
+        from cognee.infrastructure.llm.structured_output_framework.litellm_instructor.llm.llama_cpp.adapter import (
+            LlamaCppAPIAdapter,
+        )
+
+        # Get optional local mode parameters (will be None if not set)
+        model_path = llm_config.llama_cpp_model_path
+        n_ctx = llm_config.llama_cpp_n_ctx
+        n_gpu_layers = llm_config.llama_cpp_n_gpu_layers
+        chat_format = llm_config.llama_cpp_chat_format
+
+        return LlamaCppAPIAdapter(
             model=llm_config.llm_model,
             max_completion_tokens=max_completion_tokens,
+            instructor_mode=llm_config.llm_instructor_mode.lower(),
             endpoint=llm_config.llm_endpoint,
+            api_key=llm_config.llm_api_key,
+            model_path=model_path,
+            n_ctx=n_ctx,
+            n_gpu_layers=n_gpu_layers,
+            chat_format=chat_format,
+            llm_args=llm_args,
         )
-
     else:
         raise UnsupportedLLMProviderError(provider)

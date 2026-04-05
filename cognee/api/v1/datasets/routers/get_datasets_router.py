@@ -7,14 +7,17 @@ from fastapi import status
 from fastapi import APIRouter
 from fastapi.encoders import jsonable_encoder
 from fastapi import HTTPException, Query, Depends
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, Response
+from urllib.parse import urlparse
+from pathlib import Path
 
+from cognee import datasets
 from cognee.api.DTO import InDTO, OutDTO
 from cognee.infrastructure.databases.relational import get_relational_engine
 from cognee.modules.data.methods import get_authorized_existing_datasets
 from cognee.modules.data.methods import create_dataset, get_datasets_by_name
 from cognee.shared.logging_utils import get_logger
-from cognee.api.v1.exceptions import DataNotFoundError, DatasetNotFoundError
+from cognee.api.v1.exceptions import DataNotFoundError
 from cognee.modules.users.models import User
 from cognee.modules.users.methods import get_authenticated_user
 from cognee.modules.users.permissions.methods import (
@@ -24,6 +27,7 @@ from cognee.modules.users.permissions.methods import (
 from cognee.modules.graph.methods import get_formatted_graph_data
 from cognee.modules.pipelines.models import PipelineRunStatus
 from cognee.shared.utils import send_telemetry
+from cognee import __version__ as cognee_version
 
 logger = get_logger()
 
@@ -54,6 +58,7 @@ class DataDTO(OutDTO):
 class GraphNodeDTO(OutDTO):
     id: UUID
     label: str
+    type: str
     properties: dict
 
 
@@ -100,6 +105,7 @@ def get_datasets_router() -> APIRouter:
             user.id,
             additional_properties={
                 "endpoint": "GET /v1/datasets",
+                "cognee_version": cognee_version,
             },
         )
 
@@ -147,6 +153,7 @@ def get_datasets_router() -> APIRouter:
             user.id,
             additional_properties={
                 "endpoint": "POST /v1/datasets",
+                "cognee_version": cognee_version,
             },
         )
 
@@ -175,6 +182,20 @@ def get_datasets_router() -> APIRouter:
                 detail=f"Error creating dataset: {str(error)}",
             ) from error
 
+    @router.delete("")
+    async def delete_all(user: User = Depends(get_authenticated_user)):
+        """
+        Delete all user's data.
+
+        This endpoint permanently deletes all datasets that user created and all its associated data.
+        The user must have delete permissions on the dataset to perform this operation.
+
+        ## Response
+        No content returned on successful deletion.
+        If no datasets exist for the users, nothing happens.
+        """
+        await datasets.delete_all(user)
+
     @router.delete(
         "/{dataset_id}", response_model=None, responses={404: {"model": ErrorResponseDTO}}
     )
@@ -201,17 +222,11 @@ def get_datasets_router() -> APIRouter:
             additional_properties={
                 "endpoint": f"DELETE /v1/datasets/{str(dataset_id)}",
                 "dataset_id": str(dataset_id),
+                "cognee_version": cognee_version,
             },
         )
 
-        from cognee.modules.data.methods import get_dataset, delete_dataset
-
-        dataset = await get_dataset(user.id, dataset_id)
-
-        if dataset is None:
-            raise DatasetNotFoundError(message=f"Dataset ({str(dataset_id)}) not found.")
-
-        await delete_dataset(dataset)
+        await datasets.empty_dataset(dataset_id, user)
 
     @router.delete(
         "/{dataset_id}/data/{data_id}",
@@ -246,24 +261,11 @@ def get_datasets_router() -> APIRouter:
                 "endpoint": f"DELETE /v1/datasets/{str(dataset_id)}/data/{str(data_id)}",
                 "dataset_id": str(dataset_id),
                 "data_id": str(data_id),
+                "cognee_version": cognee_version,
             },
         )
 
-        from cognee.modules.data.methods import get_data, delete_data
-        from cognee.modules.data.methods import get_dataset
-
-        # Check if user has permission to access dataset and data by trying to get the dataset
-        dataset = await get_dataset(user.id, dataset_id)
-
-        if dataset is None:
-            raise DatasetNotFoundError(message=f"Dataset ({str(dataset_id)}) not found.")
-
-        data = await get_data(user.id, data_id)
-
-        if data is None:
-            raise DataNotFoundError(message=f"Data ({str(data_id)}) not found.")
-
-        await delete_data(data)
+        await datasets.delete_data(dataset_id, data_id, user)
 
     @router.get("/{dataset_id}/graph", response_model=GraphDTO)
     async def get_dataset_graph(dataset_id: UUID, user: User = Depends(get_authenticated_user)):
@@ -327,6 +329,7 @@ def get_datasets_router() -> APIRouter:
             additional_properties={
                 "endpoint": f"GET /v1/datasets/{str(dataset_id)}/data",
                 "dataset_id": str(dataset_id),
+                "cognee_version": cognee_version,
             },
         )
 
@@ -387,6 +390,7 @@ def get_datasets_router() -> APIRouter:
             additional_properties={
                 "endpoint": "GET /v1/datasets/status",
                 "datasets": [str(dataset_id) for dataset_id in datasets],
+                "cognee_version": cognee_version,
             },
         )
 
@@ -407,7 +411,7 @@ def get_datasets_router() -> APIRouter:
     @router.get("/{dataset_id}/data/{data_id}/raw", response_class=FileResponse)
     async def get_raw_data(
         dataset_id: UUID, data_id: UUID, user: User = Depends(get_authenticated_user)
-    ):
+    ) -> Response:
         """
         Download the raw data file for a specific data item.
 
@@ -433,6 +437,7 @@ def get_datasets_router() -> APIRouter:
                 "endpoint": f"GET /v1/datasets/{str(dataset_id)}/data/{str(data_id)}/raw",
                 "dataset_id": str(dataset_id),
                 "data_id": str(data_id),
+                "cognee_version": cognee_version,
             },
         )
 
@@ -467,6 +472,46 @@ def get_datasets_router() -> APIRouter:
                 message=f"Data ({data_id}) not found in dataset ({dataset_id})."
             )
 
-        return data.raw_data_location
+        raw_location = data.raw_data_location
+        parsed_uri = urlparse(raw_location)
+
+        if parsed_uri.scheme == "s3":
+            from cognee.infrastructure.files.utils.open_data_file import open_data_file
+            from cognee.infrastructure.utils.run_async import run_async
+
+            download_name = Path(parsed_uri.path).name or data.name
+            media_type = data.mime_type or "application/octet-stream"
+
+            async def file_iterator(chunk_size: int = 1024 * 1024):
+                async with open_data_file(raw_location, mode="rb") as file:
+                    while True:
+                        chunk = await run_async(file.read, chunk_size)
+                        if not chunk:
+                            break
+                        yield chunk
+
+            return StreamingResponse(
+                file_iterator(),
+                media_type=media_type,
+                headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+            )
+
+        if parsed_uri.scheme in ("file", "") or (
+            len(parsed_uri.scheme) == 1 and parsed_uri.scheme.isalpha()
+        ):
+            from cognee.infrastructure.files.utils.get_data_file_path import get_data_file_path
+
+            file_path = get_data_file_path(raw_location)
+            path = Path(file_path)
+
+            if not path.is_file():
+                raise DataNotFoundError(message=f"Raw file not found on disk for data ({data_id}).")
+
+            return FileResponse(path=path)
+
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=f"Storage scheme '{parsed_uri.scheme}' not supported for direct download.",
+        )
 
     return router

@@ -6,7 +6,7 @@ tests
 tools
 assets
 
-.dlt
+examples/python/.dlt
 .venv
 .github
 
