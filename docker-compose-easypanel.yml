@@ -1,6 +1,6 @@
 x-common-env: &common_env
-  ENV: ${ENV:-production}
-  ENVIRONMENT: ${ENV:-production}
+  ENV: ${ENV:-local}
+  ENVIRONMENT: ${ENV:-local}
   # Postgres / pgvector
   DB_PROVIDER: postgres
   DB_HOST: postgres
@@ -12,8 +12,7 @@ x-common-env: &common_env
   VECTOR_DB_PROVIDER: pgvector
   VECTOR_DB_PORT: 5432
   # API
-  COGNEE_API_PORT: ${COGNEE_API_PORT:-8000}
-  COGNEE_API_KEY: ${COGNEE_API_KEY}
+  HTTP_API_PORT: ${HTTP_API_PORT:-8000}
   ################################################################################
   #  🧠 LLM Settings
   ################################################################################
@@ -35,12 +34,6 @@ x-common-env: &common_env
   EMBEDDING_DIMENSIONS: 3072
   EMBEDDING_MAX_TOKENS: 8191
   EMBEDDING_BATCH_SIZE: 36
-  # If using BAML structured output these env variables will be used
-  BAML_LLM_PROVIDER: openai
-  BAML_LLM_MODEL: "gpt-5-mini"
-  BAML_LLM_ENDPOINT: ""
-  BAML_LLM_API_KEY: ${OPENAI_API_KEY}
-  BAML_LLM_API_VERSION: ""
   # =========================
   # Grafo (Neo4j)
   # =========================
@@ -66,19 +59,6 @@ services:
           "CMD-SHELL",
           "pg_isready -U cognee -d cognee_db -h localhost || exit 1",
         ]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-    restart: unless-stopped
-
-  # --- Redis para filas/cache ---
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis_data:/data
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -122,13 +102,6 @@ services:
       start_period: 90s
     restart: unless-stopped
 
-  redisinsight:
-    image: redislabs/redisinsight:latest
-    container_name: redisinsight
-    restart: always
-    ports:
-      - "5540:5540"
-
   # --- API principal (cognee) - build from source ---
   api:
     build:
@@ -139,15 +112,10 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     environment:
       <<: *common_env
       DEBUG: false # Change to true if debugging
-      HOST: "0.0.0.0"
-      LOG_LEVEL: "ERROR"
-      PYTHONUNBUFFERED: "1"
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      LOG_LEVEL: "INFO"
       SYSTEM_ROOT_DIRECTORY: /app/.cognee_system
     command: >
       sh -c "
@@ -171,34 +139,26 @@ services:
 
   # --- MCP Server (cognee-mcp) - build from source ---
   cognee-mcp:
-    image: cognee/cognee-mcp:main
-    # build:
-    #   context: .
-    #   dockerfile: cognee-mcp/Dockerfile # ajuste se necessário
+    # image: cognee/cognee-mcp:main
+    build:
+      context: .
+      dockerfile: cognee-mcp/Dockerfile # ajuste se necessário
     depends_on:
       api:
         condition: service_started
-      redis:
-        condition: service_healthy
-      neo4j:
-        condition: service_started
-      postgres:
-        condition: service_healthy
     environment:
       <<: *common_env
-      TRANSPORT_MODE: "${MCP_TRANSPORT_MODE:-http}"
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      TRANSPORT_MODE: "${TRANSPORT_MODE:-sse}"
       # Porta típica de MCP via WebSocket/stdio; se o projeto usar 8001/8899, ajuste
       # MCP_HOST: "0.0.0.0"
-      MCP_PORT: "8001"
+      HTTP_PORT: "8000"
       # Se o MCP falar com a API, informe a URL:
-      # COGNEE_API_BASE_URL: "http://api:8000"
-      # COGNEE_API_KEY: ${COGNEE_API_KEY}
+      API_URL: "http://api:8000"
     ports:
-      - "8001:8001"
+      - "8000:8000"
     command: >
       sh -c "
-        python -m cognee_mcp.server --host 0.0.0.0 --port 8001
+        python -m cognee_mcp.server --host 0.0.0.0 --port 8000
       "
     restart: unless-stopped
 
@@ -226,5 +186,4 @@ volumes:
   neo4j_logs: {}
   neo4j_import: {}
   neo4j_plugins: {}
-  redis_data: {}
   api_data: {}
