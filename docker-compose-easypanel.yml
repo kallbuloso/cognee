@@ -36,7 +36,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ./cognee:/app/cognee
-      - .env:/app/.env
+      # - .env:/app/.env
       - ./ontology:/app/ontology   # arquivos OWL — vazio no primeiro deploy, sem efeito
     environment:
       - DEBUG=false
@@ -170,7 +170,7 @@ services:
       dockerfile: cognee-mcp/Dockerfile
     command: --no-migration
     volumes:
-      - .env:/app/.env
+      # - .env:/app/.env
       - ./cognee:/app/cognee
       - ./ontology:/app/ontology   # mesmo volume da ontologia
     environment:
