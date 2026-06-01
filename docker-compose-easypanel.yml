@@ -177,7 +177,7 @@ services:
       - DEBUG=false
       - ENVIRONMENT=production
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - TRANSPORT_MODE=sse
+      - TRANSPORT_MODE=http
       - MCP_LOG_LEVEL=${LOG_LEVEL:-INFO}
       - PYTHONUNBUFFERED=1
 
