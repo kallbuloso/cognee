@@ -17,6 +17,10 @@
 #     passar pelo proxy reverso do Easypanel (domínio/HTTPS configurado no painel).
 #     Os serviços se comunicam internamente pelo nome do serviço dentro da rede
 #     cognee-network (ex: postgres:5432, neo4j:7687, redis:6379).
+#
+# 📁 ONTOLOGIA: o diretório ./ontology/ está mapeado em cognee e cognee-mcp
+#     como /app/ontology/. Coloque seu arquivo .owl lá e descomente
+#     ONTOLOGY_FILE_PATH no .env para ativar sem redeploy.
 ###############################################################################
 
 services:
@@ -26,7 +30,6 @@ services:
   # Exponha via Easypanel: domínio → cognee:8000
   # ---------------------------------------------------------------------------
   cognee:
-    # container_name: cognee
     restart: always
     build:
       context: .
@@ -34,6 +37,7 @@ services:
     volumes:
       - ./cognee:/app/cognee
       - .env:/app/.env
+      - ./ontology:/app/ontology   # arquivos OWL — vazio no primeiro deploy, sem efeito
     environment:
       - DEBUG=false
       - HOST=0.0.0.0
@@ -106,9 +110,10 @@ services:
       - DATASET_QUEUE_ENABLED=${DATASET_QUEUE_ENABLED:-true}
       - DATASET_QUEUE_MAX_CONCURRENT=${DATASET_QUEUE_MAX_CONCURRENT:-6}
 
-      # — Ontologia —
+      # — Ontologia (ativa quando ONTOLOGY_FILE_PATH estiver definido no .env) —
       - ONTOLOGY_RESOLVER=${ONTOLOGY_RESOLVER:-rdflib}
       - MATCHING_STRATEGY=${MATCHING_STRATEGY:-fuzzy}
+      - ONTOLOGY_FILE_PATH=${ONTOLOGY_FILE_PATH:-}
 
       # — Tradução —
       - TRANSLATION_PROVIDER=${TRANSLATION_PROVIDER:-llm}
@@ -125,6 +130,8 @@ services:
       - ALLOW_HTTP_REQUESTS=${ALLOW_HTTP_REQUESTS:-true}
       - ALLOW_CYPHER_QUERY=${ALLOW_CYPHER_QUERY:-true}
       - RAISE_INCREMENTAL_LOADING_ERRORS=${RAISE_INCREMENTAL_LOADING_ERRORS:-true}
+      - DEFAULT_USER_EMAIL=${DEFAULT_USER_EMAIL}
+      - DEFAULT_USER_PASSWORD=${DEFAULT_USER_PASSWORD}
 
       # — Dev / Debug —
       - LITELLM_LOG=${LITELLM_LOG:-ERROR}
@@ -157,7 +164,6 @@ services:
   # Exponha via Easypanel: domínio → cognee-mcp:8000
   # ---------------------------------------------------------------------------
   cognee-mcp:
-    # container_name: cognee-mcp
     restart: always
     build:
       context: .
@@ -166,6 +172,7 @@ services:
     volumes:
       - .env:/app/.env
       - ./cognee:/app/cognee
+      - ./ontology:/app/ontology   # mesmo volume da ontologia
     environment:
       - DEBUG=false
       - ENVIRONMENT=production
@@ -215,11 +222,18 @@ services:
       - CACHE_BACKEND=redis
       - REDIS_URL=redis://redis:6379/0
 
+      # — Ontologia —
+      - ONTOLOGY_RESOLVER=${ONTOLOGY_RESOLVER:-rdflib}
+      - MATCHING_STRATEGY=${MATCHING_STRATEGY:-fuzzy}
+      - ONTOLOGY_FILE_PATH=${ONTOLOGY_FILE_PATH:-}
+
       # — Segurança —
       - FASTAPI_USERS_JWT_SECRET=${FASTAPI_USERS_JWT_SECRET}
       - JWT_LIFETIME_SECONDS=${JWT_LIFETIME_SECONDS:-3600}
       - ENABLE_BACKEND_ACCESS_CONTROL=false
       - REQUIRE_AUTHENTICATION=true
+      - DEFAULT_USER_EMAIL=${DEFAULT_USER_EMAIL}
+      - DEFAULT_USER_PASSWORD=${DEFAULT_USER_PASSWORD}
 
       # — Tradução —
       - TRANSLATION_PROVIDER=${TRANSLATION_PROVIDER:-llm}
@@ -247,7 +261,6 @@ services:
   # ---------------------------------------------------------------------------
   postgres:
     image: pgvector/pgvector:pg17
-    # container_name: postgres
     restart: always
     environment:
       POSTGRES_USER: ${DB_USERNAME:-cognee}
@@ -278,7 +291,6 @@ services:
   # ---------------------------------------------------------------------------
   neo4j:
     image: neo4j:5.26
-    # container_name: neo4j
     restart: always
     environment:
       # Formato: NEO4J_AUTH=usuario/senha
@@ -316,7 +328,6 @@ services:
   # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
-    # container_name: redis
     restart: always
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
@@ -343,7 +354,6 @@ services:
   # ---------------------------------------------------------------------------
   redisinsight:
     image: redislabs/redisinsight:latest
-    # container_name: redisinsight
     restart: always
     environment:
       - RI_APP_HOST=0.0.0.0
