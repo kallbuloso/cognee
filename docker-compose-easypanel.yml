@@ -207,7 +207,7 @@ services:
     environment:
       <<: *common_env
       # — Overrides exclusivos do MCP —
-      TRANSPORT_MODE: http
+      TRANSPORT_MODE: sse
       MCP_LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PYTHONUNBUFFERED: "1"
     expose:
