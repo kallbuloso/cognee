@@ -3,7 +3,7 @@
 #
 # Serviços incluídos:
 #   • cognee          — API principal (interno: 8000)
-#   • cognee-mcp      — MCP Server SSE (interno: 8000)
+#   • cognee-mcp      — MCP Server HTTP (interno: 8000)
 #   • postgres        — PostgreSQL 17 + PGVector (interno: 5432)
 #   • neo4j           — Banco de grafos (interno: 7474 / 7687)
 #   • redis           — Cache (interno: 6379)
@@ -30,6 +30,102 @@
 #   - COGNEE_SKIP_CONNECTION_TEST=true → evita timeout de 30s no healthcheck
 ###############################################################################
 
+# ---------------------------------------------------------------------------
+# Bloco de variáveis compartilhadas entre cognee e cognee-mcp.
+# Uso: adicione "<<: *common_env" na seção environment de cada serviço e
+# sobrescreva apenas o que for diferente logo abaixo do merge.
+# ---------------------------------------------------------------------------
+x-common-env: &common_env
+  # — Geral —
+  DEBUG: "false"
+  ENVIRONMENT: production
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+  # — LLM (OpenRouter) —
+  LLM_API_KEY: ${LLM_API_KEY}
+  LLM_PROVIDER: ${LLM_PROVIDER:-custom}
+  LLM_MODEL: ${LLM_MODEL:-openrouter/deepseek/deepseek-v4-pro}
+  LLM_ENDPOINT: ${LLM_ENDPOINT:-https://openrouter.ai/api/v1}
+  LLM_RATE_LIMIT_ENABLED: ${LLM_RATE_LIMIT_ENABLED:-true}
+  LLM_RATE_LIMIT_REQUESTS: ${LLM_RATE_LIMIT_REQUESTS:-60}
+  LLM_RATE_LIMIT_INTERVAL: ${LLM_RATE_LIMIT_INTERVAL:-60}
+  STRUCTURED_OUTPUT_FRAMEWORK: ${STRUCTURED_OUTPUT_FRAMEWORK:-instructor}
+
+  # — Embedding via OpenRouter —
+  # EMBEDDING_PROVIDER=openai  → LiteLLM usa driver OpenAI
+  # EMBEDDING_MODEL com prefixo "openai/" → tiktoken mapeia o tokenizador
+  # EMBEDDING_ENDPOINT aponta para OpenRouter que roteia a chamada real
+  # EMBEDDING_API_KEY = mesma chave do OpenRouter (LLM_API_KEY)
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-openai/text-embedding-3-large}
+  EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-https://openrouter.ai/api/v1}
+  EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
+  EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-3072}
+  EMBEDDING_MAX_TOKENS: ${EMBEDDING_MAX_TOKENS:-8191}
+  EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-36}
+  # Pula o teste de conexão no startup (evita falha/timeout de 30s no healthcheck)
+  COGNEE_SKIP_CONNECTION_TEST: ${COGNEE_SKIP_CONNECTION_TEST:-true}
+
+  # — PostgreSQL (relacional) —
+  DB_PROVIDER: postgres
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: ${DB_NAME:-cognee_db}
+  DB_USERNAME: ${DB_USERNAME:-cognee}
+  DB_PASSWORD: ${DB_PASSWORD}
+
+  # — PGVector (vetorial) — credenciais explícitas para evitar fallback
+  VECTOR_DB_PROVIDER: pgvector
+  VECTOR_DB_HOST: postgres
+  VECTOR_DB_PORT: "5432"
+  VECTOR_DB_USERNAME: ${DB_USERNAME:-cognee}
+  VECTOR_DB_PASSWORD: ${DB_PASSWORD}
+  VECTOR_DB_NAME: ${DB_NAME:-cognee_db}
+
+  # — Neo4j (grafos) —
+  GRAPH_DATABASE_PROVIDER: neo4j
+  GRAPH_DATABASE_URL: bolt://neo4j:7687
+  GRAPH_DATABASE_NAME: ${GRAPH_DATABASE_NAME:-neo4j}
+  GRAPH_DATABASE_USERNAME: ${GRAPH_DATABASE_USERNAME:-neo4j}
+  GRAPH_DATABASE_PASSWORD: ${GRAPH_DATABASE_PASSWORD}
+
+  # — Wasabi S3 (armazenamento de arquivos) —
+  STORAGE_BACKEND: s3
+  STORAGE_BUCKET_NAME: ${STORAGE_BUCKET_NAME}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  AWS_REGION: ${AWS_REGION}
+  AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL:-https://s3.wasabisys.com}
+  DATA_ROOT_DIRECTORY: ${DATA_ROOT_DIRECTORY}
+  SYSTEM_ROOT_DIRECTORY: ${SYSTEM_ROOT_DIRECTORY}
+
+  # — Redis (cache) —
+  CACHING: "true"
+  CACHE_BACKEND: redis
+  REDIS_URL: redis://redis:6379/0
+
+  # — Ontologia —
+  ONTOLOGY_RESOLVER: ${ONTOLOGY_RESOLVER:-rdflib}
+  MATCHING_STRATEGY: ${MATCHING_STRATEGY:-fuzzy}
+  ONTOLOGY_FILE_PATH: ${ONTOLOGY_FILE_PATH:-}
+
+  # — Tradução —
+  TRANSLATION_PROVIDER: ${TRANSLATION_PROVIDER:-llm}
+  TARGET_LANGUAGE: ${TARGET_LANGUAGE:-pt_BR}
+  CONFIDENCE_THRESHOLD: ${CONFIDENCE_THRESHOLD:-0.8}
+
+  # — Segurança —
+  FASTAPI_USERS_JWT_SECRET: ${FASTAPI_USERS_JWT_SECRET}
+  JWT_LIFETIME_SECONDS: ${JWT_LIFETIME_SECONDS:-3600}
+  ENABLE_BACKEND_ACCESS_CONTROL: "false"
+  REQUIRE_AUTHENTICATION: "true"
+  DEFAULT_USER_EMAIL: ${DEFAULT_USER_EMAIL}
+  DEFAULT_USER_PASSWORD: ${DEFAULT_USER_PASSWORD}
+
+  # — Dev / Debug —
+  LITELLM_LOG: ${LITELLM_LOG:-ERROR}
+  TOKENIZERS_PARALLELISM: "false"
+
 services:
 
   # ---------------------------------------------------------------------------
@@ -47,117 +143,30 @@ services:
     volumes:
       - ./cognee:/app/cognee
       # - .env:/app/.env
-      - ./ontology:/app/ontology   # arquivos OWL — vazio no primeiro deploy, sem efeito
+      - ./ontology:/app/ontology
     environment:
-      - DEBUG=false
-      - HOST=0.0.0.0
-      - ENVIRONMENT=production
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
-
-      # — LLM (OpenRouter) —
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_PROVIDER=${LLM_PROVIDER:-custom}
-      - LLM_MODEL=${LLM_MODEL:-openrouter/deepseek/deepseek-v4-pro}
-      - LLM_ENDPOINT=${LLM_ENDPOINT:-https://openrouter.ai/api/v1}
-      - LLM_RATE_LIMIT_ENABLED=${LLM_RATE_LIMIT_ENABLED:-true}
-      - LLM_RATE_LIMIT_REQUESTS=${LLM_RATE_LIMIT_REQUESTS:-60}
-      - LLM_RATE_LIMIT_INTERVAL=${LLM_RATE_LIMIT_INTERVAL:-60}
-      - STRUCTURED_OUTPUT_FRAMEWORK=${STRUCTURED_OUTPUT_FRAMEWORK:-instructor}
-
-      # — Embedding via OpenRouter —
-      # EMBEDDING_PROVIDER=openai  → LiteLLM usa driver OpenAI
-      # EMBEDDING_MODEL com prefixo "openai/" → tiktoken mapeia o tokenizador
-      # EMBEDDING_ENDPOINT aponta para OpenRouter que roteia a chamada real
-      # EMBEDDING_API_KEY = mesma chave do OpenRouter (LLM_API_KEY)
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openai}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-openai/text-embedding-3-large}
-      - EMBEDDING_ENDPOINT=${EMBEDDING_ENDPOINT:-https://openrouter.ai/api/v1}
-      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
-      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-3072}
-      - EMBEDDING_MAX_TOKENS=${EMBEDDING_MAX_TOKENS:-8191}
-      - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-36}
-      # Pula o teste de conexão no startup (evita falha/timeout de 30s no healthcheck)
-      - COGNEE_SKIP_CONNECTION_TEST=${COGNEE_SKIP_CONNECTION_TEST:-true}
-
-      # — PostgreSQL (relacional) —
-      - DB_PROVIDER=postgres
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=${DB_NAME:-cognee_db}
-      - DB_USERNAME=${DB_USERNAME:-cognee}
-      - DB_PASSWORD=${DB_PASSWORD}
-
-      # — PGVector (vetorial) — credenciais explícitas para evitar fallback
-      - VECTOR_DB_PROVIDER=pgvector
-      - VECTOR_DB_HOST=postgres
-      - VECTOR_DB_PORT=5432
-      - VECTOR_DB_USERNAME=${DB_USERNAME:-cognee}
-      - VECTOR_DB_PASSWORD=${DB_PASSWORD}
-      - VECTOR_DB_NAME=${DB_NAME:-cognee_db}
-
-      # — Neo4j (grafos) —
-      - GRAPH_DATABASE_PROVIDER=neo4j
-      - GRAPH_DATABASE_URL=bolt://neo4j:7687
-      - GRAPH_DATABASE_NAME=${GRAPH_DATABASE_NAME:-neo4j}
-      - GRAPH_DATABASE_USERNAME=${GRAPH_DATABASE_USERNAME:-neo4j}
-      - GRAPH_DATABASE_PASSWORD=${GRAPH_DATABASE_PASSWORD}
-
-      # — Wasabi S3 (armazenamento de arquivos) —
-      - STORAGE_BACKEND=s3
-      - STORAGE_BUCKET_NAME=${STORAGE_BUCKET_NAME}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION=${AWS_REGION}
-      - AWS_ENDPOINT_URL=${AWS_ENDPOINT_URL:-https://s3.wasabisys.com}
-      - DATA_ROOT_DIRECTORY=${DATA_ROOT_DIRECTORY}
-      - SYSTEM_ROOT_DIRECTORY=${SYSTEM_ROOT_DIRECTORY}
-      - CACHE_ROOT_DIRECTORY=${CACHE_ROOT_DIRECTORY}
-
-      # — Redis (cache) —
-      - CACHING=true
-      - CACHE_BACKEND=redis
-      - REDIS_URL=redis://redis:6379/0
-
+      <<: *common_env
+      # — Overrides exclusivos do cognee —
+      HOST: "0.0.0.0"
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}
+      CACHE_ROOT_DIRECTORY: ${CACHE_ROOT_DIRECTORY}
       # — Migração (Postgres) —
-      - MIGRATION_DB_PROVIDER=postgres
-      - MIGRATION_DB_HOST=postgres
-      - MIGRATION_DB_PORT=5432
-      - MIGRATION_DB_NAME=${DB_NAME:-cognee_db}
-      - MIGRATION_DB_USERNAME=${DB_USERNAME:-cognee}
-      - MIGRATION_DB_PASSWORD=${DB_PASSWORD}
-
+      MIGRATION_DB_PROVIDER: postgres
+      MIGRATION_DB_HOST: postgres
+      MIGRATION_DB_PORT: "5432"
+      MIGRATION_DB_NAME: ${DB_NAME:-cognee_db}
+      MIGRATION_DB_USERNAME: ${DB_USERNAME:-cognee}
+      MIGRATION_DB_PASSWORD: ${DB_PASSWORD}
       # — Performance —
-      - DATABASE_MAX_LRU_CACHE_SIZE=${DATABASE_MAX_LRU_CACHE_SIZE:-6}
-      - DATASET_QUEUE_ENABLED=${DATASET_QUEUE_ENABLED:-true}
-      - DATASET_QUEUE_MAX_CONCURRENT=${DATASET_QUEUE_MAX_CONCURRENT:-6}
-
-      # — Ontologia (ativa quando ONTOLOGY_FILE_PATH estiver definido no .env) —
-      - ONTOLOGY_RESOLVER=${ONTOLOGY_RESOLVER:-rdflib}
-      - MATCHING_STRATEGY=${MATCHING_STRATEGY:-fuzzy}
-      - ONTOLOGY_FILE_PATH=${ONTOLOGY_FILE_PATH:-}
-
-      # — Tradução —
-      - TRANSLATION_PROVIDER=${TRANSLATION_PROVIDER:-llm}
-      - TARGET_LANGUAGE=${TARGET_LANGUAGE:-pt_BR}
-      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.8}
-
-      # — Segurança —
-      - FASTAPI_USERS_JWT_SECRET=${FASTAPI_USERS_JWT_SECRET}
-      - JWT_LIFETIME_SECONDS=${JWT_LIFETIME_SECONDS:-3600}
-      - HASH_API_KEY=${HASH_API_KEY:-True}
-      - ENABLE_BACKEND_ACCESS_CONTROL=false
-      - REQUIRE_AUTHENTICATION=true
-      - ACCEPT_LOCAL_FILE_PATH=false
-      - ALLOW_HTTP_REQUESTS=${ALLOW_HTTP_REQUESTS:-true}
-      - ALLOW_CYPHER_QUERY=${ALLOW_CYPHER_QUERY:-true}
-      - RAISE_INCREMENTAL_LOADING_ERRORS=${RAISE_INCREMENTAL_LOADING_ERRORS:-true}
-      - DEFAULT_USER_EMAIL=${DEFAULT_USER_EMAIL}
-      - DEFAULT_USER_PASSWORD=${DEFAULT_USER_PASSWORD}
-
-      # — Dev / Debug —
-      - LITELLM_LOG=${LITELLM_LOG:-ERROR}
-      - TOKENIZERS_PARALLELISM=false
+      DATABASE_MAX_LRU_CACHE_SIZE: ${DATABASE_MAX_LRU_CACHE_SIZE:-6}
+      DATASET_QUEUE_ENABLED: ${DATASET_QUEUE_ENABLED:-true}
+      DATASET_QUEUE_MAX_CONCURRENT: ${DATASET_QUEUE_MAX_CONCURRENT:-6}
+      # — Segurança adicional —
+      HASH_API_KEY: ${HASH_API_KEY:-True}
+      ACCEPT_LOCAL_FILE_PATH: "false"
+      ALLOW_HTTP_REQUESTS: ${ALLOW_HTTP_REQUESTS:-true}
+      ALLOW_CYPHER_QUERY: ${ALLOW_CYPHER_QUERY:-true}
+      RAISE_INCREMENTAL_LOADING_ERRORS: ${RAISE_INCREMENTAL_LOADING_ERRORS:-true}
     expose:
       - "8000"
     healthcheck:
@@ -182,7 +191,7 @@ services:
       - cognee-network
 
   # ---------------------------------------------------------------------------
-  # COGNEE MCP — Model Context Protocol Server (SSE)
+  # COGNEE MCP — Model Context Protocol Server (HTTP)
   # Exponha via Easypanel: domínio → cognee-mcp:8000
   # ---------------------------------------------------------------------------
   cognee-mcp:
@@ -194,87 +203,13 @@ services:
     volumes:
       # - .env:/app/.env
       - ./cognee:/app/cognee
-      - ./ontology:/app/ontology   # mesmo volume da ontologia
+      - ./ontology:/app/ontology
     environment:
-      - DEBUG=false
-      - ENVIRONMENT=production
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - TRANSPORT_MODE=http
-      - MCP_LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - PYTHONUNBUFFERED=1
-
-      # — LLM (OpenRouter) —
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_PROVIDER=${LLM_PROVIDER:-custom}
-      - LLM_MODEL=${LLM_MODEL:-openrouter/deepseek/deepseek-v4-pro}
-      - LLM_ENDPOINT=${LLM_ENDPOINT:-https://openrouter.ai/api/v1}
-
-      # — Embedding via OpenRouter —
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openai}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-openai/text-embedding-3-large}
-      - EMBEDDING_ENDPOINT=${EMBEDDING_ENDPOINT:-https://openrouter.ai/api/v1}
-      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
-      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-3072}
-      - COGNEE_SKIP_CONNECTION_TEST=${COGNEE_SKIP_CONNECTION_TEST:-true}
-
-      # — Banco de dados (espelha o cognee principal) —
-      - DB_PROVIDER=postgres
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=${DB_NAME:-cognee_db}
-      - DB_USERNAME=${DB_USERNAME:-cognee}
-      - DB_PASSWORD=${DB_PASSWORD}
-
-      # — PGVector (vetorial) — credenciais explícitas para evitar fallback
-      - VECTOR_DB_PROVIDER=pgvector
-      - VECTOR_DB_HOST=postgres
-      - VECTOR_DB_PORT=5432
-      - VECTOR_DB_USERNAME=${DB_USERNAME:-cognee}
-      - VECTOR_DB_PASSWORD=${DB_PASSWORD}
-      - VECTOR_DB_NAME=${DB_NAME:-cognee_db}
-
-      # — Neo4j (grafos) —
-      - GRAPH_DATABASE_PROVIDER=neo4j
-      - GRAPH_DATABASE_URL=bolt://neo4j:7687
-      - GRAPH_DATABASE_NAME=${GRAPH_DATABASE_NAME:-neo4j}
-      - GRAPH_DATABASE_USERNAME=${GRAPH_DATABASE_USERNAME:-neo4j}
-      - GRAPH_DATABASE_PASSWORD=${GRAPH_DATABASE_PASSWORD}
-
-      # — Wasabi S3 —
-      - STORAGE_BACKEND=s3
-      - STORAGE_BUCKET_NAME=${STORAGE_BUCKET_NAME}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION=${AWS_REGION}
-      - AWS_ENDPOINT_URL=${AWS_ENDPOINT_URL:-https://s3.wasabisys.com}
-      - DATA_ROOT_DIRECTORY=${DATA_ROOT_DIRECTORY}
-      - SYSTEM_ROOT_DIRECTORY=${SYSTEM_ROOT_DIRECTORY}
-
-      # — Redis —
-      - CACHING=true
-      - CACHE_BACKEND=redis
-      - REDIS_URL=redis://redis:6379/0
-
-      # — Ontologia —
-      - ONTOLOGY_RESOLVER=${ONTOLOGY_RESOLVER:-rdflib}
-      - MATCHING_STRATEGY=${MATCHING_STRATEGY:-fuzzy}
-      - ONTOLOGY_FILE_PATH=${ONTOLOGY_FILE_PATH:-}
-
-      # — Segurança —
-      - FASTAPI_USERS_JWT_SECRET=${FASTAPI_USERS_JWT_SECRET}
-      - JWT_LIFETIME_SECONDS=${JWT_LIFETIME_SECONDS:-3600}
-      - ENABLE_BACKEND_ACCESS_CONTROL=false
-      - REQUIRE_AUTHENTICATION=true
-      - DEFAULT_USER_EMAIL=${DEFAULT_USER_EMAIL}
-      - DEFAULT_USER_PASSWORD=${DEFAULT_USER_PASSWORD}
-
-      # — Tradução —
-      - TRANSLATION_PROVIDER=${TRANSLATION_PROVIDER:-llm}
-      - TARGET_LANGUAGE=${TARGET_LANGUAGE:-pt_BR}
-      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.8}
-
-      - LITELLM_LOG=${LITELLM_LOG:-ERROR}
-      - TOKENIZERS_PARALLELISM=false
+      <<: *common_env
+      # — Overrides exclusivos do MCP —
+      TRANSPORT_MODE: http
+      MCP_LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      PYTHONUNBUFFERED: "1"
     expose:
       - "8000"
     depends_on:
@@ -327,14 +262,14 @@ services:
     restart: always
     environment:
       # Formato: NEO4J_AUTH=usuario/senha
-      - NEO4J_AUTH=${GRAPH_DATABASE_USERNAME:-neo4j}/${GRAPH_DATABASE_PASSWORD}
-      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
+      NEO4J_AUTH: ${GRAPH_DATABASE_USERNAME:-neo4j}/${GRAPH_DATABASE_PASSWORD}
+      NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
       # Memória heap (ajuste conforme RAM disponível no nó Easypanel)
-      - NEO4J_server_memory_heap_initial__size=512m
-      - NEO4J_server_memory_heap_max__size=2G
-      - NEO4J_server_memory_pagecache_size=1G
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 2G
+      NEO4J_server_memory_pagecache_size: 1G
       # Aceita conexões de qualquer origem interna
-      - NEO4J_dbms_default__listen__address=0.0.0.0
+      NEO4J_dbms_default__listen__address: "0.0.0.0"
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -389,8 +324,8 @@ services:
     image: redislabs/redisinsight:latest
     restart: always
     environment:
-      - RI_APP_HOST=0.0.0.0
-      - RI_APP_PORT=5540
+      RI_APP_HOST: "0.0.0.0"
+      RI_APP_PORT: "5540"
     volumes:
       - redisinsight_data:/data
     expose:
