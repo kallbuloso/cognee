@@ -33,7 +33,10 @@ services:
     restart: always
     build:
       context: .
-      dockerfile: Dockerfile
+      # Dockerfile.easypanel é uma cópia do Dockerfile original com --extra aws
+      # adicionado ao uv sync, necessário para s3fs (STORAGE_BACKEND=s3).
+      # Mantido separado para não conflitar com atualizações do upstream.
+      dockerfile: Dockerfile.easypanel
     volumes:
       - ./cognee:/app/cognee
       # - .env:/app/.env
