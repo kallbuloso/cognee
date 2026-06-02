@@ -21,6 +21,13 @@
 # 📁 ONTOLOGIA: o diretório ./ontology/ está mapeado em cognee e cognee-mcp
 #     como /app/ontology/. Coloque seu arquivo .owl lá e descomente
 #     ONTOLOGY_FILE_PATH no .env para ativar sem redeploy.
+#
+# 📝 EMBEDDING via OpenRouter:
+#   - EMBEDDING_PROVIDER=openai       → LiteLLM usa o driver OpenAI
+#   - EMBEDDING_MODEL=openai/text-embedding-3-large  → prefixo "openai/" para
+#     que o tiktoken mapeie o tokenizador; o ENDPOINT roteia para o OpenRouter
+#   - EMBEDDING_API_KEY deve ser igual à LLM_API_KEY (chave do OpenRouter)
+#   - COGNEE_SKIP_CONNECTION_TEST=true → evita timeout de 30s no healthcheck
 ###############################################################################
 
 services:
@@ -58,16 +65,20 @@ services:
       - LLM_RATE_LIMIT_INTERVAL=${LLM_RATE_LIMIT_INTERVAL:-60}
       - STRUCTURED_OUTPUT_FRAMEWORK=${STRUCTURED_OUTPUT_FRAMEWORK:-instructor}
 
-      # — Embedding (OpenRouter → OpenAI) —
-      # ⚠️ EMBEDDING_MODEL deve usar o nome nativo OpenAI (sem prefixo "openrouter/")
-      # para que o tiktoken consiga mapear o tokenizador corretamente.
-      # O EMBEDDING_ENDPOINT aponta para o OpenRouter, que roteia o modelo.
+      # — Embedding via OpenRouter —
+      # EMBEDDING_PROVIDER=openai  → LiteLLM usa driver OpenAI
+      # EMBEDDING_MODEL com prefixo "openai/" → tiktoken mapeia o tokenizador
+      # EMBEDDING_ENDPOINT aponta para OpenRouter que roteia a chamada real
+      # EMBEDDING_API_KEY = mesma chave do OpenRouter (LLM_API_KEY)
       - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openai}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-large}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-openai/text-embedding-3-large}
       - EMBEDDING_ENDPOINT=${EMBEDDING_ENDPOINT:-https://openrouter.ai/api/v1}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
       - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-3072}
       - EMBEDDING_MAX_TOKENS=${EMBEDDING_MAX_TOKENS:-8191}
       - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-36}
+      # Pula o teste de conexão no startup (evita falha/timeout de 30s no healthcheck)
+      - COGNEE_SKIP_CONNECTION_TEST=${COGNEE_SKIP_CONNECTION_TEST:-true}
 
       # — PostgreSQL (relacional) —
       - DB_PROVIDER=postgres
@@ -198,13 +209,13 @@ services:
       - LLM_MODEL=${LLM_MODEL:-openrouter/deepseek/deepseek-v4-pro}
       - LLM_ENDPOINT=${LLM_ENDPOINT:-https://openrouter.ai/api/v1}
 
-      # — Embedding —
-      # ⚠️ EMBEDDING_MODEL deve usar o nome nativo OpenAI (sem prefixo "openrouter/")
-      # para que o tiktoken consiga mapear o tokenizador corretamente.
+      # — Embedding via OpenRouter —
       - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openai}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-large}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-openai/text-embedding-3-large}
       - EMBEDDING_ENDPOINT=${EMBEDDING_ENDPOINT:-https://openrouter.ai/api/v1}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
       - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS:-3072}
+      - COGNEE_SKIP_CONNECTION_TEST=${COGNEE_SKIP_CONNECTION_TEST:-true}
 
       # — Banco de dados (espelha o cognee principal) —
       - DB_PROVIDER=postgres
