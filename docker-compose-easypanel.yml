@@ -90,7 +90,7 @@ x-common-env: &common_env
   GRAPH_DATABASE_PASSWORD: ${GRAPH_DATABASE_PASSWORD}
 
   # — Wasabi S3 (armazenamento de arquivos) —
-  STORAGE_BACKEND: s3
+  STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
   STORAGE_BUCKET_NAME: ${STORAGE_BUCKET_NAME}
   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
   AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
@@ -141,7 +141,7 @@ services:
       # Mantido separado para não conflitar com atualizações do upstream.
       dockerfile: Dockerfile.easypanel
     volumes:
-      # - ./cognee:/app/cognee   # comentado: sobrescreve o pacote instalado em produção
+      - ./cognee:/app/cognee   # comentado: sobrescreve o pacote instalado em produção
       # - .env:/app/.env
       - ./ontology:/app/ontology
     environment:
@@ -201,8 +201,8 @@ services:
       dockerfile: cognee-mcp/Dockerfile
     command: --no-migration
     volumes:
+      - ./cognee:/app/cognee   # comentado: sobrescreve o pacote instalado em produção
       # - .env:/app/.env
-      # - ./cognee:/app/cognee   # comentado: sobrescreve o pacote instalado em produção
       - ./ontology:/app/ontology
     environment:
       <<: *common_env
@@ -346,6 +346,8 @@ networks:
     name: cognee-network
 
 volumes:
+  ./cognee:
+  ./ontology:
   postgres_data:
   neo4j_data:
   neo4j_logs:
