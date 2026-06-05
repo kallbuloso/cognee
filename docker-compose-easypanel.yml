@@ -141,9 +141,9 @@ services:
       # Mantido separado para não conflitar com atualizações do upstream.
       dockerfile: Dockerfile.easypanel
     volumes:
-      - ./cognee:/app/cognee   # comentado: sobrescreve o pacote instalado em produção
+      - app_cognee:/app/cognee   # comentado: sobrescreve o pacote instalado em produção
       # - .env:/app/.env
-      - ./ontology:/app/ontology
+      - app_ontology:/app/ontology
     environment:
       <<: *common_env
       # — Overrides exclusivos do cognee —
@@ -201,9 +201,9 @@ services:
       dockerfile: cognee-mcp/Dockerfile
     command: --no-migration
     volumes:
-      - ./cognee:/app/cognee   # comentado: sobrescreve o pacote instalado em produção
+      - app_cognee:/app/cognee   # comentado: sobrescreve o pacote instalado em produção
       # - .env:/app/.env
-      - ./ontology:/app/ontology
+      - app_ontology:/app/ontology
     environment:
       <<: *common_env
       # — Overrides exclusivos do MCP —
@@ -346,8 +346,8 @@ networks:
     name: cognee-network
 
 volumes:
-  ./cognee:
-  ./ontology:
+  app_cognee:
+  app_ontology:
   postgres_data:
   neo4j_data:
   neo4j_logs:
